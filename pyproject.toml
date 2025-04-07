@@ -10,17 +10,19 @@ authors = [
 ]
 description = "A library to analyze project structure and generate context for LLMs." # TODO: 説明をより詳細に記述してください
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License", # TODO: ライセンスを決定してください
     "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
 ]
 dependencies = [
     # ここに実行時依存ライブラリを追加します
     "pyyaml>=6.0",
     "pathspec>=0.12",
-    "watchdog>=6.0.0",
+    "watchdog>=3.0.0",
+    "typer[all]>=0.15.2",  # Use [all] to include rich dependency
 ]
 
 [project.optional-dependencies]
@@ -34,6 +36,11 @@ dev = [
 [project.urls]
 "Homepage" = "https://github.com/your-username/kotemari" # TODO: プロジェクトのURLを更新してください
 "Bug Tracker" = "https://github.com/your-username/kotemari/issues" # TODO: IssueトラッカーのURLを更新してください
+
+[project.scripts]
+# English: Define the entry point for the CLI application.
+# 日本語: CLIアプリケーションのエントリポイントを定義します。
+kotemari = "kotemari.gateway.cli_parser:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

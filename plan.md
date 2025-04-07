@@ -101,21 +101,24 @@
 
 ### Step 8: コンテキスト生成機能 (旧Step 7)
 
-*   **ゴール:** 指定されたファイルに基づき、関連ファイル（依存関係も考慮）の内容を結合したコンテキストを生成できるようにする。
+*   **ゴール:** 指定されたファイルとその依存関係（オプション）から、LLM に入力するためのコンテキスト文字列を生成する機能。
 *   **チェックリスト:**
-    *   `[ ]` **Service:** `FileContentFormatter` (必要に応じてファイル内容整形) 実装 (`src/kotemari/service/`)。
+    *   `[ ]` **Domain:** `ContextData` (コンテキストの種類、関連ファイルパスリスト、生成されたコンテキスト文字列) データクラス定義 (`src/kotemari/domain/`)。
+    *   `[ ]` **Domain:** `FileContentFormatter` (ファイルパスと内容を結合するフォーマッタ) インターフェース定義と基本的な実装 (`src/kotemari/domain/`)。
     *   `[ ]` **UseCase:** `ContextBuilder` (関連ファイル選択ロジック、内容結合、`FileContentFormatter` 利用) 実装 (`src/kotemari/usecase/`)。
     *   `[ ]` `Kotemari` ファサードに `get_context` メソッド実装 (`analyze_project`, `get_dependencies`, `ContextBuilder`, `CacheUpdater` 連携)。
-    *   `[ ]` Step 8 のユニットテスト作成と実行 (特定ファイルに対するコンテキスト生成テスト)。
+    *   `[ ]` 8. Unit Test: Create and pass unit tests for the `ContextBuilder` and `Kotemari.get_context` functionality.
 
 ### Step 9: CLIインターフェース (旧Step 8)
 
 *   **ゴール:** コマンドラインから主要機能 (`analyze`, `list`, `tree`, `context`, `dependencies`, `clear-cache`, `watch`) を利用できるようにする。
 *   **依存ライブラリ:** `typer`
 *   **チェックリスト:**
-    *   `[ ]` `uv add typer[all]` を実行。
-    *   `[ ]` **Controller:** `CliController` (`typer` 使用、`Kotemari` ファサード呼び出し) 実装 (`src/kotemari/controller/cli.py`)。`watch` コマンドを追加。
-    *   `[ ]` Step 9 の動作確認 (手動またはテスト)。
+    *   `[x]` `uv add typer[all]` を実行。
+    *   `[x]` **Gateway:** `CliParser` (typer を利用) 実装 (`src/kotemari/gateway/`) - analyze, dependencies, context, watch コマンドとオプション定義。
+    *   `[x]` **Controller:** `CliController` 実装 (`src/kotemari/controller/`) - `CliParser` からの入力を受け取り、`Kotemari` ファサードのメソッド呼び出し、結果を整形して表示 (rich を利用)。
+    *   `[x]` `pyproject.toml` にエントリポイント (`[project.scripts]`) を設定し、`kotemari` コマンドを実行可能にする。
+    *   `[ ]` Integration Test: CLIコマンド (`analyze`, `dependencies`, `context`, `watch`) の基本的な動作を確認するテスト (pytest を使用し、subprocess で CLI を実行)。
 
 ### Step 10: 外部ドキュメント取得機能 (旧Step 9)
 

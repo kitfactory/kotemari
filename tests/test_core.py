@@ -11,6 +11,14 @@ from kotemari.domain.file_info import FileInfo
 from kotemari.domain.dependency_info import DependencyInfo
 from kotemari.usecase.cache_updater import CacheUpdater
 from kotemari.gateway.cache_storage import CacheStorage
+from kotemari.domain.cache_metadata import CacheMetadata
+from kotemari.domain.file_system_event import FileSystemEvent, FileSystemEventType
+
+# Create a logger instance for this test module
+logger = logging.getLogger(__name__)
+
+# Configure logging for tests (optional) - Can be configured globally or via pytest options
+# logging.basicConfig(level=logging.DEBUG)
 
 # Re-use or adapt the project structure fixture from analyzer tests
 # アナライザーテストからプロジェクト構造フィクスチャを再利用または適合させます
@@ -35,7 +43,72 @@ def setup_facade_test_project(tmp_path: Path):
     (proj_root / "venv").mkdir()
     (proj_root / "venv" / "activate").touch()
 
+    # Create files needed for specific tests (e.g., test_get_context_success)
+    # 特定のテスト（例：test_get_context_success）に必要なファイルを作成します
+    (proj_root / "main.py").write_text("print('hello from main')")
+    (proj_root / "my_module").mkdir()
+    (proj_root / "my_module" / "utils.py").write_text("def helper(): return 1")
+    (proj_root / "ignored.log").write_text("log data") # Example ignored file
+
+    logger.debug(f"Created test project structure at: {proj_root}")
     return proj_root
+
+# Fixtures for Kotemari instances
+@pytest.fixture
+def kotemari_instance_empty(setup_facade_test_project):
+    """
+    Provides a Kotemari instance without analysis performed.
+    分析が実行されていない Kotemari インスタンスを提供します。
+    """
+    return Kotemari(setup_facade_test_project)
+
+@pytest.fixture
+@patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
+def kotemari_instance_analyzed(mock_analyze, setup_facade_test_project):
+    """
+    Provides a Kotemari instance that is considered analyzed (mocks analysis).
+    Includes files created by setup_facade_test_project in the mock results.
+    分析済みとみなされる Kotemari インスタンスを提供します（分析をモックします）。
+    setup_facade_test_project で作成されたファイルをモック結果に含めます。
+    """
+    project_root = setup_facade_test_project
+    # Mock results needed for tests using this fixture
+    # Include files that are actually created by the setup fixture
+    # このフィクスチャを使用するテストに必要なモック結果
+    # セットアップフィクスチャによって実際に作成されるファイルを含めます
+    mock_results = [
+        # Files typically included in analysis mock
+        # 通常分析モックに含まれるファイル
+        FileInfo(path=project_root / "app.py", mtime=datetime.datetime.now(), size=10, language="Python", hash="h1", dependencies=[]), # Added dependencies=[]
+        FileInfo(path=project_root / "lib" / "helpers.py", mtime=datetime.datetime.now(), size=20, language="Python", hash="h2", dependencies=[]), # Added dependencies=[]
+        FileInfo(path=project_root / "data.csv", mtime=datetime.datetime.now(), size=30, language=None, hash="h3", dependencies=[]), # Added dependencies=[]
+        # Files created by setup_facade_test_project specifically for context tests
+        # コンテキストテスト用に setup_facade_test_project によって特別に作成されたファイル
+        FileInfo(path=project_root / "main.py", mtime=datetime.datetime.now(), size=25, language="Python", hash="h4", dependencies=[]),
+        FileInfo(path=project_root / "my_module" / "utils.py", mtime=datetime.datetime.now(), size=21, language="Python", hash="h5", dependencies=[]),
+    ]
+    mock_analyze.return_value = mock_results
+
+    kotemari = Kotemari(project_root)
+    try:
+        kotemari.analyze_project() # Perform the mocked analysis
+    except Exception as e:
+        pytest.fail(f"analyze_project failed during fixture setup: {e}")
+
+    # Add a check to ensure the analysis results are set
+    # 分析結果が設定されていることを確認するためのチェックを追加します
+    assert kotemari._analysis_results is not None, "Analysis results were not set in fixture"
+    assert kotemari.project_analyzed, "Project analyzed flag not set in fixture"
+
+    # Debugging: Check if cache storage has paths after analysis (if cache enabled)
+    # デバッグ: 分析後にキャッシュストレージにパスがあるか確認します（キャッシュが有効な場合）
+    if kotemari._use_cache and kotemari._cache_storage:
+        stored_paths = kotemari._cache_storage.get_all_file_paths()
+        logger.debug(f"[Fixture] Paths in CacheStorage after analyze: {stored_paths}")
+        expected_paths = {str(fi.path) for fi in mock_results}
+        assert set(stored_paths) == expected_paths, "CacheStorage paths do not match mock results"
+
+    return kotemari
 
 # --- Test Kotemari Initialization --- #
 
@@ -51,10 +124,11 @@ def test_kotemari_init(setup_facade_test_project):
     assert kotemari.project_root.name == "facade_test_proj"
     # Check if internal analyzer seems initialized (basic check)
     # 内部アナライザーが初期化されているように見えるか確認します（基本チェック）
-    assert hasattr(kotemari, '_project_analyzer')
+    assert hasattr(kotemari, 'analyzer') # Changed from _project_analyzer
     assert kotemari._config_manager is not None
     assert kotemari._ignore_processor is not None
     assert kotemari._analysis_results is None # Results not loaded initially
+    assert kotemari.project_analyzed is False # Ensure analysis flag is initially False
 
 # --- Test analyze_project Method --- #
 
@@ -257,49 +331,73 @@ def test_get_tree_with_max_depth(setup_facade_test_project):
 
 # Use patch to control CacheUpdater behavior within Kotemari
 # Kotemari 内の CacheUpdater の動作を制御するために patch を使用します
+@patch('kotemari.core.CacheStorage')
 @patch('kotemari.core.CacheUpdater')
 @patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
-def test_kotemari_analyze_uses_cache(mock_analyze, mock_cache_updater_cls, setup_facade_test_project):
+def test_kotemari_analyze_uses_cache(
+    mock_analyze,
+    mock_cache_updater_cls,
+    mock_cache_storage_cls,
+    setup_facade_test_project
+):
     """
-    Tests that analyze_project uses the CacheUpdater when cache is enabled.
-    キャッシュが有効な場合に analyze_project が CacheUpdater を使用することをテストします。
+    Tests that analyze_project uses CacheStorage for loading and CacheUpdater for saving.
+    analyze_project が読み込みに CacheStorage を、保存に CacheUpdater を使用することをテストします。
     """
     project_root = setup_facade_test_project
+    # Need separate mocks for storage and updater instances if Kotemari creates them internally
+    # Kotemari が内部でインスタンスを作成する場合、ストレージとアップデーター用に別々のモックが必要です
+    mock_cache_storage_instance = mock_cache_storage_cls.return_value
+    mock_cache_updater_instance = mock_cache_updater_cls.return_value # Keep for update assertion
+
+    # Note: Kotemari.__init__ creates CacheStorage and potentially CacheUpdater.
+    # The patch needs to intercept *these* creations.
     kotemari = Kotemari(project_root, use_cache=True)
 
-    # Mock instances and methods
-    # インスタンスとメソッドをモックします
-    mock_cache_updater_instance = mock_cache_updater_cls.return_value
-    mock_analyze.return_value = [FileInfo(path=project_root / "a.py", mtime=datetime.datetime.now(), size=1)] # Fresh result
-    cached_result = [FileInfo(path=project_root / "cached.py", mtime=datetime.datetime.now(), size=2)]
+    # Fresh analysis result if cache misses
+    # キャッシュミスの場合の新しい分析結果
+    fresh_result = [FileInfo(path=project_root / "a.py", mtime=datetime.datetime.now(), size=1)]
+    mock_analyze.return_value = fresh_result
 
-    # Scenario 1: Valid cache found
-    # シナリオ 1: 有効なキャッシュが見つかりました
-    mock_cache_updater_instance.get_valid_cache.return_value = cached_result
+    # Cached analysis result and metadata
+    # キャッシュされた分析結果とメタデータ
+    cached_files = [FileInfo(path=project_root / "cached.py", mtime=datetime.datetime.now(), size=2)]
+    cached_metadata = CacheMetadata(cache_time=datetime.datetime.now(), source_hash="dummy_hash")
+    cached_data = (cached_files, cached_metadata)
+
+    # --- Scenario 1: Valid cache found ---
+    logger.info("Testing cache hit scenario...")
+    mock_cache_storage_instance.load_cache.return_value = cached_data # Mock load_cache
+    mock_analyze.reset_mock() # Reset analyze mock before call
+    mock_cache_updater_instance.update_cache.reset_mock() # Reset update mock
+
     results1 = kotemari.analyze_project()
-    mock_analyze.assert_called_once() # Called once for preliminary analysis
-    mock_cache_updater_instance.get_valid_cache.assert_called_once_with(mock_analyze.return_value)
-    mock_cache_updater_instance.update_cache.assert_not_called() # Should not update if valid cache found
-    assert results1 is cached_result # Should return the cached result
-    assert kotemari._analysis_results is cached_result
 
-    # Reset mocks for next scenario
-    # 次のシナリオのためにモックをリセットします
+    mock_cache_storage_instance.load_cache.assert_called_once() # Verify load was attempted
+    mock_analyze.assert_not_called() # Analyzer should NOT be called if cache hits
+    mock_cache_updater_instance.update_cache.assert_not_called() # Updater should NOT be called if cache hits
+    assert results1 == cached_files # Result should be the cached data
+    logger.info("Cache hit scenario passed.")
+
+    # --- Scenario 2: No valid cache found ---
+    logger.info("Testing cache miss scenario...")
+    kotemari.project_analyzed = False # Reset analysis state for re-analysis
+    kotemari._analysis_results = None # Clear in-memory cache
+    mock_cache_storage_instance.load_cache.return_value = None # Simulate no cache found
+    mock_cache_storage_instance.reset_mock() # Reset mocks for second run
     mock_analyze.reset_mock()
     mock_cache_updater_instance.reset_mock()
-    kotemari._analysis_results = None # Clear in-memory cache
 
-    # Scenario 2: Invalid cache found
-    # シナリオ 2: 無効なキャッシュが見つかりました
-    mock_cache_updater_instance.get_valid_cache.return_value = None
-    fresh_result = [FileInfo(path=project_root / "b.py", mtime=datetime.datetime.now(), size=3)]
-    mock_analyze.return_value = fresh_result # Analyzer returns fresh data
     results2 = kotemari.analyze_project()
-    mock_analyze.assert_called_once() # Called for preliminary analysis
-    mock_cache_updater_instance.get_valid_cache.assert_called_once_with(fresh_result)
-    mock_cache_updater_instance.update_cache.assert_called_once_with(fresh_result) # Should update with fresh results
-    assert results2 is fresh_result # Should return the fresh result
-    assert kotemari._analysis_results is fresh_result
+
+    mock_cache_storage_instance.load_cache.assert_called_once() # Verify load was attempted again
+    mock_analyze.assert_called_once() # Analyzer *should* be called now
+    mock_cache_updater_instance.update_cache.assert_called_once_with(fresh_result) # Verify updater is called with fresh results
+    assert results2 == fresh_result # Result should be the fresh analysis data
+    logger.info("Cache miss scenario passed.")
+
+    # --- Scenario 3: Cache disabled ---
+    # (Optional: Add a test case where use_cache=False and assert mocks are not called)
 
 @patch('kotemari.core.CacheUpdater')
 @patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
@@ -463,3 +561,56 @@ def test_get_dependencies_non_existent_file(setup_facade_test_project, caplog):
     # Check for the warning from get_dependencies
     assert f"Cannot resolve path for dependency lookup: {non_existent_path_str}" in caplog.text or \
            f"File '{non_existent_path_abs}' not found in analysis results" in caplog.text 
+
+# --- get_context tests ---
+
+def test_get_context_not_analyzed(kotemari_instance_empty):
+    """Tests that get_context raises RuntimeError if analyze hasn't run."""
+    instance: Kotemari = kotemari_instance_empty
+    target_file = instance.project_root / "dummy_file.py"
+    target_file.touch() # Create the file
+
+    with pytest.raises(RuntimeError, match="Project must be analyzed first"):
+        instance.get_context([str(target_file)])
+
+def test_get_context_success(kotemari_instance_analyzed):
+    """Tests get_context successfully retrieves formatted content."""
+    instance: Kotemari = kotemari_instance_analyzed
+    main_py_path = instance.project_root / "main.py"
+    util_py_path = instance.project_root / "my_module" / "utils.py"
+
+    # Ensure files exist (they should from the fixture)
+    assert main_py_path.exists()
+    assert util_py_path.exists()
+
+    context_str = instance.get_context([str(main_py_path), str(util_py_path)])
+
+    # Check if content from both files and headers are present
+    # Check for file names in the header, ignoring path separator differences
+    # ヘッダー内のファイル名をチェックし、パス区切り文字の違いを無視します
+    assert f"# --- File: {main_py_path.name} ---" in context_str
+    assert f"# --- File: {util_py_path.name} ---" in context_str
+    # Also check for the actual content written by the fixture
+    # フィクスチャによって書き込まれた実際のコンテンツもチェックします
+    assert "print('hello from main')" in context_str # Content from setup_facade_test_project
+    assert "def helper(): return 1" in context_str # Content from setup_facade_test_project
+
+def test_get_context_target_file_not_in_analysis(kotemari_instance_analyzed):
+    """Tests get_context when a target file exists but wasn't part of analysis (e.g., ignored)."""
+    instance: Kotemari = kotemari_instance_analyzed
+    ignored_file_path = instance.project_root / "ignored_by_gitignore.txt"
+    ignored_file_path.write_text("This file is ignored.")
+
+    # Should raise FileNotFoundError because it's not in the cache/analysis result
+    with pytest.raises(FileNotFoundError, match="not found in analyzed project data"):
+         instance.get_context([str(ignored_file_path)])
+
+def test_get_context_target_file_does_not_exist(kotemari_instance_analyzed):
+    """Tests get_context when a target file physically doesn't exist."""
+    instance: Kotemari = kotemari_instance_analyzed
+    non_existent_file = instance.project_root / "non_existent.py"
+    assert not non_existent_file.exists()
+
+    # Should raise FileNotFoundError because it's not in the cache and likely fails existence check
+    with pytest.raises(FileNotFoundError, match="not found in analyzed project data"):
+        instance.get_context([str(non_existent_file)]) 

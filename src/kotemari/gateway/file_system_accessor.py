@@ -114,3 +114,19 @@ class FileSystemAccessor:
                     # このエラーをログに記録しますか？今のところ、ファイルをスキップします。
                     # print(f"Warning: Could not access file info for {file_path}", file=sys.stderr)
                     pass 
+
+    def exists(self, file_path: Path | str) -> bool:
+        """
+        Checks if a file or directory exists at the given path.
+        指定されたパスにファイルまたはディレクトリが存在するかどうかを確認します。
+
+        Args:
+            file_path (Path | str): The path to check.
+                                    確認するパス。
+
+        Returns:
+            bool: True if the path exists, False otherwise.
+                  パスが存在する場合は True、それ以外の場合は False。
+        """
+        abs_path = self.path_resolver.resolve_absolute(file_path)
+        return abs_path.exists() 

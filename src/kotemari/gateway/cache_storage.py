@@ -145,3 +145,31 @@ class CacheStorage:
             logger.info("Cache file does not exist, nothing to clear.")
             return True # Considered success if already clear
                        # すでにクリアされている場合は成功とみなされます 
+
+    def get_all_file_paths(self) -> List[str]:
+        """
+        Returns all file paths from the cached analysis results as strings.
+        キャッシュされた分析結果からすべてのファイルパスを文字列として返します。
+
+        Returns:
+            List[str]: A list of file paths as strings.
+                       文字列としてのファイルパスのリスト。
+        """
+        if self.cache_file.is_file():
+            try:
+                with self.cache_file.open('rb') as f:
+                    cached_data = pickle.load(f)
+                if (isinstance(cached_data, tuple) and len(cached_data) == 2 and
+                    isinstance(cached_data[0], list)):
+                    file_infos = cached_data[0]
+                    # Assuming each FileInfo object has an attribute 'path' of type Path or str.
+                    # 各 FileInfo オブジェクトが Path または str 型の 'path' 属性を持つと仮定します。
+                    return [str(fi.path) for fi in file_infos if hasattr(fi, 'path')]
+                else:
+                    logger.warning(f"Cache file {self.cache_file} has unexpected format.")
+                    return []
+            except Exception as e:
+                logger.error(f"Error loading cache in get_all_file_paths: {e}")
+                return []
+        else:
+            return [] 

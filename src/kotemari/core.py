@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Union
 import logging
+import datetime
 
 from .domain.file_info import FileInfo
 from .domain.file_system_event import FileSystemEvent
@@ -13,6 +14,12 @@ from .gateway.cache_storage import CacheStorage
 from .gateway.gitignore_reader import GitignoreReader
 from .service.ignore_rule_processor import IgnoreRuleProcessor
 from .service.file_system_event_monitor import FileSystemEventMonitor, FileSystemEventCallback
+from .usecase.context_builder import ContextBuilder
+from .domain.project_config import ProjectConfig
+from .domain.context_data import ContextData
+from .gateway.file_system_accessor import FileSystemAccessor
+from .domain.file_content_formatter import BasicFileContentFormatter
+from .domain.cache_metadata import CacheMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +31,13 @@ class Kotemari:
     プロジェクトの分析、ファイル一覧表示、コンテキスト生成などのメソッドを提供します。
     """
 
-    def __init__(self, project_root: Path | str, config_path: Optional[Path | str] = None, use_cache: bool = True):
+    def __init__(
+        self,
+        project_root: Union[str, Path],
+        config_path: Optional[Union[str, Path]] = None,
+        use_cache: bool = True,
+        log_level: Union[int, str] = logging.INFO
+    ):
         """
         Initializes the Kotemari facade.
         Kotemari ファサードを初期化します。
@@ -43,8 +56,17 @@ class Kotemari:
                                         Defaults to True.
                                         分析結果にキャッシュを使用するかどうか。
                                         デフォルトは True。
+            log_level (Union[int, str], optional): The logging level for the Kotemari instance.
+                                                  Defaults to logging.INFO.
+                                                  ログレベル。
+                                                  デフォルトは logging.INFO。
         """
         self._path_resolver = PathResolver()
+        # Initialize FileSystemAccessor and Formatter early
+        # FileSystemAccessor と Formatter を早期に初期化します
+        self._file_accessor = FileSystemAccessor(self._path_resolver)
+        self._formatter = BasicFileContentFormatter()
+
         self._project_root: Path = self._path_resolver.resolve_absolute(project_root)
         self._config_path: Optional[Path] = None
         if config_path:
@@ -65,19 +87,28 @@ class Kotemari:
         # Analyzer を初期化します（共有コンポーネントを使用）
         # Pass already created instances to avoid re-creation
         # 再作成を避けるために、既に作成されたインスタンスを渡します
-        self._project_analyzer: ProjectAnalyzer = ProjectAnalyzer(
+        print("[DEBUG] Initializing self.analyzer...") # DEBUG ADD
+        print(f"[DEBUG]   project_root={self._project_root}") # DEBUG ADD
+        print(f"[DEBUG]   path_resolver={self._path_resolver}") # DEBUG ADD
+        print(f"[DEBUG]   config_manager={self._config_manager}") # DEBUG ADD
+        print(f"[DEBUG]   ignore_processor={self._ignore_processor}") # DEBUG ADD
+        print(f"[DEBUG]   file_accessor={self._file_accessor}") # DEBUG ADD
+        self.analyzer: ProjectAnalyzer = ProjectAnalyzer(
             project_root=self._project_root,
             path_resolver=self._path_resolver, # Pass resolver
             config_manager=self._config_manager, # Pass config manager
-            ignore_processor=self._ignore_processor # Pass ignore processor
-            # Let Analyzer create its own fs_accessor, hash_calculator, language_detector if needed
-            # 必要に応じて、Analyzer に独自の fs_accessor, hash_calculator, language_detector を作成させます
+            ignore_processor=self._ignore_processor, # Pass ignore processor
+            fs_accessor=self._file_accessor # CHANGED: Pass file accessor with correct name 'fs_accessor'
+            # Let Analyzer create its own hash_calculator, language_detector if needed
+            # 必要に応じて、Analyzer に独自の hash_calculator, language_detector を作成させます
         )
+        print(f"[DEBUG] self.analyzer initialized: {self.analyzer}") # DEBUG ADD
 
         self._use_cache = use_cache
         self._cache_storage = CacheStorage(self._project_root) # Create storage directly
         self._cache_updater: Optional[CacheUpdater] = None
         self._analysis_results: Optional[List[FileInfo]] = None # Cache for analysis results
+        self.project_analyzed: bool = False # Initialize analysis flag
         self._event_monitor: Optional[FileSystemEventMonitor] = None # Add this
 
         if self._use_cache:
@@ -91,6 +122,38 @@ class Kotemari:
         logger.info(f"Kotemari initialized for project root: {self._project_root}")
         if self._config_path:
             logger.info(f"Using explicit config path: {self._config_path}")
+
+        # English: Load cache if available, otherwise initialize empty state
+        # 日本語: キャッシュが利用可能であればロードし、そうでなければ空の状態で初期化します
+        # self._load_cache_or_initialize()
+
+        # ----- REDUNDANT INITIALIZATION TO BE COMMENTED OUT START -----
+        # English: Initialize UseCase instances
+        # 日本語: ユースケースインスタンスを初期化します
+        # Use internal attributes for initialization
+        # 初期化には内部属性を使用します
+        # Note: ProjectAnalyzer now uses the accessor directly from Kotemari
+        # 注意: ProjectAnalyzer は Kotemari から直接アクセサを使用します
+        # --- This block is redundant and incorrect, commenting out ---
+        # self.analyzer = ProjectAnalyzer(
+        #     project_root=self._project_root,
+        #     cache_storage=self._cache_storage if self._use_cache else None, # INCORRECT: Analyzer doesn't take cache_storage
+        #     config_manager=self._config_manager, # Pass config manager instead of raw config
+        #     file_accessor=self._file_accessor, # Use internal accessor
+        #     path_resolver=self._path_resolver, # Pass shared path resolver
+        #     ignore_processor=self._ignore_processor # Pass shared ignore processor
+        # )
+        # ----- REDUNDANT INITIALIZATION COMMENTED OUT END -----
+
+        print("[DEBUG] Initializing self.context_builder...") # DEBUG ADD
+        print(f"[DEBUG]   file_accessor={self._file_accessor}") # DEBUG ADD
+        print(f"[DEBUG]   formatter={self._formatter}") # DEBUG ADD
+        self.context_builder = ContextBuilder(
+            file_accessor=self._file_accessor, # Use internal accessor
+            formatter=self._formatter # Use internal formatter instance
+        )
+        print(f"[DEBUG] self.context_builder initialized: {self.context_builder}") # DEBUG ADD
+        # CacheUpdater is initialized in start_watching
 
     @property
     def project_root(self) -> Path:
@@ -116,55 +179,44 @@ class Kotemari:
         logger.info(f"Starting project analysis for: {self.project_root}")
         logger.debug(f"Cache enabled: {self._use_cache}, Force reanalyze: {force_reanalyze}")
 
-        # Return in-memory cache if available and not forcing reanalyze
-        # メモリ内キャッシュが利用可能で、再分析を強制しない場合はそれを返します
-        if self._analysis_results is not None and not force_reanalyze:
+        # Return in-memory cache if available and analysis already done and not forcing reanalyze
+        # メモリ内キャッシュが利用可能で、分析が完了しており、再分析を強制しない場合はそれを返します
+        if self.project_analyzed and self._analysis_results is not None and not force_reanalyze:
             logger.info("Returning in-memory cached analysis results.")
             return self._analysis_results
 
+        # --- Cache Handling Logic (slightly adjusted) ---
         if self._use_cache and self._cache_updater and not force_reanalyze:
             logger.info("Cache enabled. Checking cache validity...")
-            # 1. Perform analysis to get current state for validation
-            # 1. 検証のために現在の状態を取得するための分析を実行します
-            # This is needed to calculate the current state hash.
-            # これは現在の状態ハッシュを計算するために必要です。
-            logger.debug("Performing preliminary analysis to determine current project state...")
-            current_files = self._project_analyzer.analyze()
-            logger.debug(f"Preliminary analysis complete. Found {len(current_files)} files.")
-
-            # 2. Try to load and validate the cache using the current state
-            # 2. 現在の状態を使用してキャッシュの読み込みと検証を試みます
-            cached_results = self._cache_updater.get_valid_cache(current_files)
-
-            if cached_results is not None:
-                # Cache is valid, use it
-                # キャッシュは有効です、それを使用します
-                logger.info(f"Valid cache found. Returning {len(cached_results)} cached results.")
-                self._analysis_results = cached_results # Store in memory
+            # Try to load from disk cache first
+            cached_data = self._cache_storage.load_cache()
+            if cached_data:
+                analysis_results, metadata = cached_data
+                # Validate cache (example: check config hash or file mtimes)
+                # ここでキャッシュの妥当性検証ロジックを追加する（例：設定ハッシュやファイル更新時刻）
+                # For now, assume loaded cache is valid if it exists
+                logger.info(f"Valid cache found from disk. Returning {len(analysis_results)} cached results.")
+                self._analysis_results = analysis_results
+                self.project_analyzed = True # Mark as analyzed
                 return self._analysis_results
             else:
-                # Cache was invalid or not found, use the results from the preliminary analysis
-                # キャッシュが無効または見つかりませんでした。予備分析の結果を使用します
-                logger.info("Cache invalid or not found. Using preliminary analysis results.")
-                self._analysis_results = current_files # Store in memory
-                # Update the cache with the results we just computed
-                # 計算したばかりの結果でキャッシュを更新します
-                logger.info("Updating cache with new analysis results...")
-                self._cache_updater.update_cache(self._analysis_results)
-                logger.info("Cache updated successfully.")
-                return self._analysis_results
+                logger.info("No valid disk cache found. Performing analysis.")
+        # --- End Cache Handling --- #
 
-        # Cache disabled, or force_reanalyze=True, or CacheUpdater not available
-        # キャッシュが無効、または force_reanalyze=True、または CacheUpdater が利用不可
-        logger.info("Performing full project analysis (cache disabled, forced, or updater missing)...")
-        self._analysis_results = self._project_analyzer.analyze()
-        logger.info(f"Full analysis complete. Found {len(self._analysis_results)} files.")
+        # Perform analysis if no cache hit or cache disabled/forced
+        # キャッシュヒットがない場合、またはキャッシュが無効/強制の場合に分析を実行します
+        logger.info("Performing project analysis...")
+        self._analysis_results = self.analyzer.analyze()
+        self.project_analyzed = True # Mark as analyzed after analysis
+        logger.info(f"Analysis complete. Found {len(self._analysis_results)} files.")
 
-        # If cache is enabled, update it even if analysis was forced (to store the latest)
-        # キャッシュが有効な場合、分析が強制された場合でも更新します（最新のものを保存するため）
+        # Update cache if enabled
+        # 有効な場合はキャッシュを更新します
         if self._use_cache and self._cache_updater:
-            logger.info("Updating cache with forced analysis results...")
-            self._cache_updater.update_cache(self._analysis_results)
+            logger.info("Updating cache with new analysis results...")
+            # Let CacheUpdater handle metadata creation and saving
+            # CacheUpdater にメタデータの作成と保存を処理させます
+            self._cache_updater.update_cache(self._analysis_results) # Pass only analysis_results
             logger.info("Cache updated successfully.")
 
         return self._analysis_results
@@ -418,3 +470,90 @@ class Kotemari:
             # ファイルは存在するかもしれませんが、無視されたか分析範囲に含まれていませんでした
             logger.warning(f"File '{absolute_path}' not found in analysis results. Cannot retrieve dependencies.")
             return []
+
+    def get_context(self, target_paths: List[str]) -> str:
+        """
+        Generates a context string from the content of the specified target files.
+        指定されたターゲットファイルの内容からコンテキスト文字列を生成します。
+
+        Args:
+            target_paths: A list of paths (relative to project root or absolute)
+                          to the target files.
+                          ターゲットファイルへのパス（プロジェクトルートからの相対パスまたは絶対パス）のリスト。
+
+        Returns:
+            str: The generated context string.
+                 生成されたコンテキスト文字列。
+
+        Raises:
+            RuntimeError: If the project has not been analyzed yet.
+                          プロジェクトがまだ分析されていない場合。
+            FileNotFoundError: If any target file is not found within the analyzed project scope or file system.
+                               分析されたプロジェクトスコープまたはファイルシステム内でターゲットファイルが見つからない場合。
+            IOError: If there is an error reading file content.
+                     ファイル内容の読み取り中にエラーが発生した場合。
+        """
+        self._ensure_analyzed()
+
+        # English: Resolve target paths to absolute paths
+        # 日本語: ターゲットパスを絶対パスに解決します
+        absolute_target_paths = [self._path_resolver.resolve_absolute(p) for p in target_paths]
+
+        # English: Verify that target files are known from the analysis (optional but good practice)
+        # 日本語: ターゲットファイルが分析から既知であることを確認します（オプションですが、良い習慣です）
+        # This check prevents trying to build context for files outside the project or ignored files.
+        # このチェックにより、プロジェクト外のファイルや無視されたファイルに対してコンテキストを構築しようとするのを防ぎます。
+        for p in absolute_target_paths:
+            if str(p) not in self._cache_storage.get_all_file_paths():
+                 # Or check directly if file exists via file_accessor if preferred
+                 # または、必要に応じて file_accessor を介してファイルが存在するか直接確認します
+                raise FileNotFoundError(f"Target file {p} not found in analyzed project data.")
+
+        try:
+            # English: Use the ContextBuilder use case
+            # 日本語: ContextBuilder ユースケースを使用します
+            context_data: ContextData = self.context_builder.build_context(
+                target_files=absolute_target_paths,
+                project_root=Path(self.project_root)
+            )
+            return context_data.context_string
+        except (FileNotFoundError, IOError) as e:
+            logger.error(f"Error during context generation: {e}")
+            # Re-raise the specific error for the controller to handle
+            # コントローラーが処理できるように特定のエラーを再発生させます
+            raise e
+        except Exception as e:
+            logger.exception(f"Unexpected error during context generation: {e}")
+            # Raise a more generic error or handle differently
+            # より一般的なエラーを発生させるか、異なる方法で処理します
+            raise RuntimeError(f"Failed to generate context: {e}") from e
+
+    def _ensure_analyzed(self) -> None:
+        """
+        Ensures that the project analysis has been performed.
+        プロジェクト分析が実行されたことを確認します。
+
+        Raises:
+            RuntimeError: If analysis has not been performed.
+                          分析が実行されていない場合。
+        """
+        if not self.project_analyzed:
+            logger.error("Project must be analyzed first. Call analyze_project() first.")
+            raise RuntimeError("Project must be analyzed first. Call analyze_project() first.")
+
+    def _resolve_path(self, path_str: str) -> Path:
+        """
+        Resolves a path string to a Path object.
+        パス文字列を Path オブジェクトに解決します。
+
+        Args:
+            path_str (str): The path string to resolve.
+                            解決するパス文字列。
+
+        Returns:
+            Path: The resolved path object.
+                 解決されたパスオブジェクト。
+        """
+        # English: Simply return the path object.
+        # 日本語: 単にパスオブジェクトを返します。
+        return Path(path_str)

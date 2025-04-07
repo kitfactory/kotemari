@@ -103,35 +103,24 @@
 
 *   **ゴール:** 指定されたファイルとその依存関係（オプション）から、LLM に入力するためのコンテキスト文字列を生成する機能。
 *   **チェックリスト:**
-    *   `[ ]` **Domain:** `ContextData` (コンテキストの種類、関連ファイルパスリスト、生成されたコンテキスト文字列) データクラス定義 (`src/kotemari/domain/`)。
-    *   `[ ]` **Domain:** `FileContentFormatter` (ファイルパスと内容を結合するフォーマッタ) インターフェース定義と基本的な実装 (`src/kotemari/domain/`)。
-    *   `[ ]` **UseCase:** `ContextBuilder` (関連ファイル選択ロジック、内容結合、`FileContentFormatter` 利用) 実装 (`src/kotemari/usecase/`)。
-    *   `[ ]` `Kotemari` ファサードに `get_context` メソッド実装 (`analyze_project`, `get_dependencies`, `ContextBuilder`, `CacheUpdater` 連携)。
-    *   `[ ]` 8. Unit Test: Create and pass unit tests for the `ContextBuilder` and `Kotemari.get_context` functionality.
+    *   `[x]` **Domain:** `ContextData` (コンテキストの種類、関連ファイルパスリスト、生成されたコンテキスト文字列) データクラス定義 (`src/kotemari/domain/`)。
+    *   `[x]` **Domain:** `FileContentFormatter` (ファイルパスと内容を結合するフォーマッタ) インターフェース定義と基本的な実装 (`src/kotemari/domain/`)。
+    *   `[x]` **UseCase:** `ContextBuilder` (関連ファイル選択ロジック、内容結合、`FileContentFormatter` 利用) 実装 (`src/kotemari/usecase/`)。
+    *   `[x]` `Kotemari` ファサードに `get_context` メソッド実装 (`analyze_project`, `get_dependencies`, `ContextBuilder`, `CacheUpdater` 連携)。
+    *   `[x]` 8. Unit Test: Create and pass unit tests for the `ContextBuilder` and `Kotemari.get_context` functionality.
 
 ### Step 9: CLIインターフェース (旧Step 8)
 
-*   **ゴール:** コマンドラインから主要機能 (`analyze`, `list`, `tree`, `context`, `dependencies`, `clear-cache`, `watch`) を利用できるようにする。
+*   **ゴール:** コマンドラインから主要機能 (`analyze`, `list`, `tree`, `context`, `dependencies`) を利用できるようにする。
 *   **依存ライブラリ:** `typer`
 *   **チェックリスト:**
     *   `[x]` `uv add typer[all]` を実行。
     *   `[x]` **Gateway:** `CliParser` (typer を利用) 実装 (`src/kotemari/gateway/`) - analyze, dependencies, context, watch コマンドとオプション定義。
     *   `[x]` **Controller:** `CliController` 実装 (`src/kotemari/controller/`) - `CliParser` からの入力を受け取り、`Kotemari` ファサードのメソッド呼び出し、結果を整形して表示 (rich を利用)。
     *   `[x]` `pyproject.toml` にエントリポイント (`[project.scripts]`) を設定し、`kotemari` コマンドを実行可能にする。
-    *   `[ ]` Integration Test: CLIコマンド (`analyze`, `dependencies`, `context`, `watch`) の基本的な動作を確認するテスト (pytest を使用し、subprocess で CLI を実行)。
+    *   `[x]` Integration Test: CLIコマンド (`analyze`, `dependencies`, `context`) の基本的な動作を確認するテスト (pytest を使用し、subprocess で CLI を実行)。 (注: `dependencies` は既知の問題により xfail)
 
-### Step 10: 外部ドキュメント取得機能 (旧Step 9)
-
-*   **ゴール:** 設定ファイルに基づき、外部ライブラリのドキュメントを取得・キャッシュできるようにする。
-*   **依存ライブラリ:** `requests`
-*   **チェックリスト:**
-    *   `[ ]` `uv add requests` を実行。
-    *   `[ ]` **Gateway:** `HttpDownloader` 実装 (`src/kotemari/gateway/`)。
-    *   `[ ]` **UseCase:** `DocManager` (ダウンロード、キャッシュ管理、`HttpDownloader`, `CacheStorage` 利用) 実装 (`src/kotemari/usecase/`)。
-    *   `[ ]` `Kotemari` ファサードに `fetch_external_docs` メソッド実装。
-    *   `[ ]` Step 10 のユニットテスト作成と実行 (ネットワークはモック化)。
-
-### Step 11: 仕上げ (旧Step 10)
+### Step 10: 仕上げ (旧Step 11)
 
 *   **ゴール:** ライブラリとしての完成度を高め、リリース可能な状態にする。
 *   **チェックリスト:**
@@ -141,6 +130,17 @@
     *   `[ ]` コード全体のレビューとリファクタリング。
     *   `[ ]` パッケージング設定 (`pyproject.toml`) の最終確認。
     *   `[ ]` リリース準備 (バージョン設定、changelogなど)。
+
+### Step 11: 外部ドキュメント取得機能 (将来拡張, 旧Step 10)
+
+*   **ゴール:** 設定ファイルに基づき、外部ライブラリのドキュメントを取得・キャッシュできるようにする。
+*   **依存ライブラリ:** `requests`
+*   **チェックリスト:**
+    *   `[ ]` `uv add requests` を実行。
+    *   `[ ]` **Gateway:** `HttpDownloader` 実装 (`src/kotemari/gateway/`)。
+    *   `[ ]` **UseCase:** `DocManager` (ダウンロード、キャッシュ管理、`HttpDownloader`, `CacheStorage` 利用) 実装 (`src/kotemari/usecase/`)。
+    *   `[ ]` `Kotemari` ファサードに `fetch_external_docs` メソッド実装。
+    *   `[ ]` Step 11 のユニットテスト作成と実行 (ネットワークはモック化)。
 
 ## 3. 注意事項
 

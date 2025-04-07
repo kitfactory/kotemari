@@ -1,166 +1,199 @@
 from pathlib import Path
-from typing import List
-from kotemari.core import Kotemari
+from typing import List, Optional
+import logging
+
+from rich.console import Console
+from rich.table import Table
+from rich.syntax import Syntax
+from rich.panel import Panel
+from rich.text import Text
+from rich import box
+
+from ..core import Kotemari
+from ..domain.dependency_info import DependencyType
 import typer # Typer needed for exit
 
 # English: Use rich for better console output formatting.
 # 日本語: より良いコンソール出力フォーマットのために rich を使用します。
-from rich.console import Console
-from rich.table import Table
-from rich.syntax import Syntax
+
+# Basic logger setup (adjust level and format as needed)
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 console = Console()
 
 class CliController:
     """
-    Controller class to handle CLI commands and interact with the Kotemari core.
-    CLIコマンドを処理し、Kotemariコアと対話するためのコントローラークラス。
-
-    Attributes:
-        kotemari: An instance of the Kotemari core class.
-                  Kotemariコアクラスのインスタンス。
+    Handles the logic for CLI commands, interfacing with the Kotemari core library.
+    CLIコマンドのロジックを処理し、Kotemariコアライブラリとのインターフェースを提供します。
     """
-    def analyze_project(self, project_path: Path):
+    def __init__(self, project_root: str, config_path: Optional[str] = None, use_cache: bool = True):
         """
-        Handles the 'analyze' command.
-        'analyze' コマンドを処理します。
+        Initializes the controller with project context.
+        プロジェクトコンテキストでコントローラーを初期化します。
 
         Args:
-            project_path: The root path of the project to analyze.
-                          分析するプロジェクトのルートパス。
+            project_root: The absolute path to the project root directory.
+                          プロジェクトルートディレクトリへの絶対パス。
+            config_path: Optional path to the configuration file.
+                         設定ファイルへのオプションのパス。
+            use_cache: Whether the Kotemari instance should use caching.
+                       Kotemari インスタンスがキャッシュを使用するかどうか。
         """
-        # English: Create Kotemari instance specific to this command's project path.
-        # 日本語: このコマンドのプロジェクトパスに固有のKotemariインスタンスを作成します。
-        kotemari = Kotemari(str(project_path))
-        console.print(f"[bold cyan]Analyzing project:[/bold cyan] {project_path}")
-        try:
-            kotemari.analyze_project() # analyze_project now takes no args
-            console.print("[bold green]Analysis complete and cache updated.[/bold green]")
-        except Exception as e:
-            console.print(f"[bold red]Error during analysis:[/bold red] {e}")
-            raise typer.Exit(code=1)
+        self.project_root = project_root
+        self.config_path = config_path
+        self.use_cache = use_cache # Store cache preference
+        # Lazy initialization of Kotemari instance
+        # Kotemari インスタンスの遅延初期化
+        self._kotemari_instance: Optional[Kotemari] = None
+        self.console = Console()
 
-    def show_dependencies(self, file_path: Path, project_path: Path):
-        """
-        Handles the 'dependencies' command.
-        'dependencies' コマンドを処理します。
-
-        Args:
-            file_path: The path to the file to show dependencies for.
-                       依存関係を表示するファイルのパス。
-            project_path: The root path of the project.
-                          プロジェクトのルートパス。
-        """
-        # English: Create Kotemari instance specific to this command's project path.
-        # 日本語: このコマンドのプロジェクトパスに固有のKotemariインスタンスを作成します。
-        kotemari = Kotemari(str(project_path))
-        console.print(f"[bold cyan]Showing dependencies for:[/bold cyan] {file_path}")
-        try:
-            # English: Ensure analysis has run at least once, maybe implicitly via Kotemari?
-            # 日本語: 分析が少なくとも一度実行されたことを確認します（Kotemari経由で暗黙的に？）。
-            # self.kotemari.ensure_analysis(str(project_path))
-            dependencies = kotemari.get_dependencies(str(file_path))
-
-            if not dependencies:
-                console.print("No dependencies found or file not part of the analysis.")
-                return
-
-            table = Table(title=f"Dependencies for {file_path.name}", show_header=True, header_style="bold magenta")
-            table.add_column("Module Name", style="dim", width=40)
-            table.add_column("Type", width=20)
-            table.add_column("Resolved Name", width=40)
-            table.add_column("Level", width=10)
-
-            for dep in sorted(dependencies):
-                table.add_row(
-                    dep.module_name,
-                    dep.dependency_type.name,
-                    dep.resolved_name,
-                    str(dep.level) if dep.level is not None else "N/A"
+    def _get_kotemari_instance(self) -> Kotemari:
+        """Gets or initializes the Kotemari instance."""
+        if self._kotemari_instance is None:
+            try:
+                logger.debug(f"Initializing Kotemari for project: {self.project_root}, config: {self.config_path}, use_cache: {self.use_cache}")
+                # Pass the stored use_cache preference to Kotemari constructor
+                # 保存された use_cache 設定を Kotemari コンストラクタに渡します
+                self._kotemari_instance = Kotemari(
+                    project_root=self.project_root, 
+                    config_path=self.config_path,
+                    use_cache=self.use_cache # Pass the flag here
                 )
-            console.print(table)
+                logger.debug("Kotemari instance initialized successfully.")
+            except Exception as e:
+                logger.exception(f"Failed to initialize Kotemari: {e}")
+                self.console.print(f"[bold red]Error:[/bold red] Failed to initialize project analysis: {e}")
+                raise typer.Exit(code=1)
+        return self._kotemari_instance
 
-        except RuntimeError as e:
-             console.print(f"[bold red]Error:[/bold red] {e} Please run 'analyze' first.")
-             raise typer.Exit(code=1)
+    def analyze_and_display(self):
+        """
+        Analyzes the project and displays a summary.
+        プロジェクトを分析し、要約を表示します。
+        """
+        instance = self._get_kotemari_instance()
+        try:
+            analysis_results = instance.analyze_project()
+            
+            logger.info("Analysis complete.")
+
+            # Display summary in a table
+            table = Table(title="Analysis Summary", show_header=False, box=box.ROUNDED)
+            # table.add_row("Project Root", str(instance.project_root))
+            # table.add_row("Config File", str(instance.config_path) if instance.config_path else "Default")
+            # table.add_row("Cache Status", "Enabled" if instance.use_cache else "Disabled")
+            # table.add_row("Cache File", str(instance.cache_manager.cache_file_path) if instance.use_cache else "N/A")
+            table.add_row("Total Files Analyzed", str(len(analysis_results))) # Corrected: Get length of the list directly
+
+            console.print(table)
+        except FileNotFoundError as e:
+            logger.error(f"Target file not found in analysis: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
+            raise typer.Exit(code=1)
         except Exception as e:
-            console.print(f"[bold red]Error getting dependencies:[/bold red] {e}")
+            logger.exception(f"Error during analysis: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Analysis failed: {e}")
             raise typer.Exit(code=1)
 
-    def generate_context(self, target_files: List[Path], project_path: Path):
+    def show_dependencies(self, target_file_path: str):
         """
-        Handles the 'context' command.
-        'context' コマンドを処理します。
-
+        Shows dependencies for a specific file.
+        特定のファイルの依存関係を表示します。
         Args:
-            target_files: List of file paths to generate context from.
-                          コンテキストを生成するファイルパスのリスト。
-            project_path: The root path of the project.
-                          プロジェクトのルートパス。
+            target_file_path: Path to the target file.
+                             ターゲットファイルへのパス。
         """
-        # English: Create Kotemari instance specific to this command's project path.
-        # 日本語: このコマンドのプロジェクトパスに固有のKotemariインスタンスを作成します。
-        kotemari = Kotemari(str(project_path))
-        console.print(f"[bold cyan]Generating context for:[/bold cyan] {', '.join(map(str, target_files))}")
+        instance = self._get_kotemari_instance()
         try:
-            # English: Ensure analysis has run at least once.
-            # 日本語: 分析が少なくとも一度実行されたことを確認します。
-            # self.kotemari.ensure_analysis(str(project_path))
-            context_str = kotemari.get_context([str(f) for f in target_files])
-
-            if not context_str:
-                console.print("Could not generate context. Files might not be part of the analysis or have no content.")
+            # Ensure analysis is done first, preferably using cache
+            # まず分析が完了していることを確認します（できればキャッシュを使用）
+            instance.analyze_project()
+            
+            dependencies = instance.get_dependencies(target_file_path)
+            
+            if not dependencies:
+                self.console.print(f"No dependencies found for: [cyan]{target_file_path}[/cyan]")
                 return
 
-            # English: Use rich.syntax for highlighting the generated context.
-            # 日本語: 生成されたコンテキストをハイライト表示するために rich.syntax を使用します。
-            syntax = Syntax(context_str, "python", theme="default", line_numbers=True)
-            console.print(syntax)
+            # Prepare data for the table
+            # テーブル用のデータを準備します
+            dependency_data = []
+            for dep in dependencies:
+                # Check the DependencyType enum to determine if internal or external
+                # DependencyType enum をチェックして内部か外部かを判断します
+                if dep.dependency_type in (DependencyType.INTERNAL_RELATIVE, DependencyType.INTERNAL_ABSOLUTE):
+                    dep_type = "Internal"
+                else:
+                    dep_type = "External"
+                # dep_type = "Internal" if dep.is_internal else "External" # OLD WAY
+                dependency_data.append((dep.module_name, dep_type))
 
-        except RuntimeError as e:
-             console.print(f"[bold red]Error:[/bold red] {e} Please run 'analyze' first.")
-             raise typer.Exit(code=1)
+            if not dependency_data:
+                self.console.print("  No dependencies found.")
+
+            table = Table(title=f"Dependencies for: {Path(target_file_path).name}")
+            table.add_column("Imported Module", style="cyan")
+            table.add_column("Type", style="magenta")
+            # table.add_column("Source File (if internal)", style="green") # Comment out for now
+
+            # Sort the prepared data by module name
+            # 準備したデータをモジュール名でソートします
+            for module_name, dep_type in sorted(dependency_data, key=lambda d: d[0]):
+                table.add_row(module_name, dep_type) # Removed source_file display
+                # source_file = str(dep[0]) if dep_type == "Internal" else "N/A"
+                # table.add_row(dep[0], dep_type, source_file)
+
+            self.console.print(table)
+
+        except FileNotFoundError as e:
+            logger.error(f"Target file not found in analysis: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
+            raise typer.Exit(code=1)
         except Exception as e:
-            console.print(f"[bold red]Error generating context:[/bold red] {e}")
+            logger.exception(f"Error getting dependencies: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Failed to get dependencies: {e}")
             raise typer.Exit(code=1)
 
-    def start_watching(self, project_path: Path):
+    def generate_context(self, target_file_paths: List[str]):
         """
-        Handles the 'watch' command.
-        'watch' コマンドを処理します。
-
+        Generates and prints the context string for the given files.
+        指定されたファイルのコンテキスト文字列を生成して表示します。
         Args:
-            project_path: The root path of the project to watch.
-                          監視するプロジェクトのルートパス。
+            target_file_paths: List of paths to the target files.
+                               ターゲットファイルへのパスのリスト。
         """
-        # English: Create Kotemari instance specific to this command's project path.
-        # 日本語: このコマンドのプロジェクトパスに固有のKotemariインスタンスを作成します。
-        kotemari = Kotemari(str(project_path))
-        console.print(f"[bold cyan]Starting file watcher for:[/bold cyan] {project_path}")
-        console.print("Press Ctrl+C to stop.")
+        instance = self._get_kotemari_instance()
         try:
-            # English: The start_watching method in Kotemari should handle the background thread and blocking.
-            # 日本語: Kotemariのstart_watchingメソッドがバックグラウンドスレッドとブロッキングを処理する必要があります。
-            kotemari.start_watching()
-            # Note: The loop in cli_parser is now redundant if Kotemari handles blocking.
-            # 注意: Kotemariがブロッキングを処理する場合、cli_parser内のループは冗長になります。
-        except KeyboardInterrupt:
-            console.print("\n[bold yellow]Watcher stopped by user.[/bold yellow]")
-            kotemari.stop_watching() # Ensure stop is called
-        except Exception as e:
-            console.print(f"[bold red]Error during watching:[/bold red] {e}")
-            kotemari.stop_watching() # Attempt to stop watcher on error
+            # Ensure analysis is done
+            instance.analyze_project()
+            context_string = instance.get_context(target_file_paths)
+            
+            # Use rich.Syntax for potential highlighting (detect language if possible)
+            # 潜在的なハイライトのために rich.Syntax を使用します（可能であれば言語を検出）
+            # Simple print for now
+            # 今はシンプルな print
+            # self.console.print(Panel(context_string, title="Generated Context", border_style="blue"))
+            self.console.print(context_string) # Direct print as per current formatter output
+
+        except FileNotFoundError as e:
+            logger.error(f"Target file not found for context generation: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
             raise typer.Exit(code=1)
+        except Exception as e:
+            logger.exception(f"Error generating context: {e}")
+            self.console.print(f"[bold red]Error:[/bold red] Failed to generate context: {e}")
+            raise typer.Exit(code=1)
+
+    # TODO: Implement methods for list, tree, watch commands
+    #       list, tree, watch コマンド用のメソッドを実装します
 
 # --- Integration with Typer App --- 
-# English: Create an instance of the controller.
-# 日本語: コントローラーのインスタンスを作成します。
-controller = CliController()
-
-# English: Modify the Typer command functions in cli_parser to call the controller methods.
-# 日本語: cli_parser の Typer コマンド関数を修正して、コントローラーメソッドを呼び出します。
-# This requires modifying the cli_parser.py file or structuring the project differently (e.g., passing controller).
-# これには、cli_parser.pyファイルを変更するか、プロジェクトの構造を異なる方法で構成する必要があります（例：コントローラーを渡す）。
+# English: Remove the outdated controller instantiation.
+# 日本語: 古いコントローラーのインスタンス化を削除します。
+# The controller is now instantiated within each command function in cli_parser.py
+# コントローラーは cli_parser.py の各コマンド関数内でインスタンス化されるようになりました
+# controller = CliController() # REMOVE THIS LINE
 
 # For demonstration, let's assume cli_parser.py is modified like this:
 # (This code won't run directly here, it shows the intended link)
@@ -175,11 +208,11 @@ def analyze(project_path: Path = ...):
 
 @app.command()
 def dependencies(file_path: Path = ..., project_path: Path = ...):
-    controller.show_dependencies(file_path, project_path)
+    controller.show_dependencies(str(file_path))
 
 @app.command()
 def context(target_files: List[Path] = ..., project_path: Path = ...):
-    controller.generate_context(target_files, project_path)
+    controller.generate_context([str(f) for f in target_files])
 
 @app.command()
 def watch(project_path: Path = ...):

@@ -22,8 +22,10 @@ dependencies = [
     "pyyaml>=6.0",
     "pathspec>=0.12",
     "watchdog>=3.0.0",
-    "typer[all]>=0.15.2",  # Use [all] to include rich dependency
+    "typer[all]>=0.15.2", # Use [all] to include rich dependency
+    "rich>=14.0.0",
 ]
+keywords = ["python", "project analysis", "dependency", "context generation", "llm"]
 
 [project.optional-dependencies]
 dev = [
@@ -34,16 +36,20 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/your-username/kotemari" # TODO: プロジェクトのURLを更新してください
+"Homepage" = "https://github.com/yourusername/kotemari" # Replace with actual URL
 "Bug Tracker" = "https://github.com/your-username/kotemari/issues" # TODO: IssueトラッカーのURLを更新してください
+Repository = "https://github.com/yourusername/kotemari" # Replace with actual URL
 
 [project.scripts]
 # English: Define the entry point for the CLI application.
 # 日本語: CLIアプリケーションのエントリポイントを定義します。
-kotemari = "kotemari.gateway.cli_parser:app"
+kotemari = "kotemari.gateway.cli_parser:main"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = [
+    "tests",
+    "tests/integration", # Add integration test path
+]
 python_files = ["test_*.py"]
 pythonpath = ["src"]
 norecursedirs = ["tests/dummy_python_proj", ".venv", ".git", "dist", "build"]

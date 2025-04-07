@@ -94,11 +94,8 @@ def run_cli_command(command: list[str], cwd: Path) -> subprocess.CompletedProces
 
 def test_analyze_command(setup_test_project: Path):
     """Tests the basic execution of the 'kotemari analyze' command."""
-    result = run_cli_command(["analyze", "."], cwd=setup_test_project)
+    result = run_cli_command(["analyze"], cwd=setup_test_project)
     
-    print("Analyze STDOUT:", result.stdout)
-    print("Analyze STDERR:", result.stderr)
-
     assert result.returncode == 0, f"Expected return code 0, but got {result.returncode}. STDERR: {result.stderr}"
     assert "Analysis Summary" in result.stdout
     assert "Total Files Analyzed" in result.stdout
@@ -115,9 +112,6 @@ def test_dependencies_command(setup_test_project: Path):
     target_file = setup_test_project / "src" / "main.py"
     result = run_cli_command(["dependencies", str(target_file)], cwd=setup_test_project)
 
-    print("Dependencies STDOUT:", result.stdout)
-    print("Dependencies STDERR:", result.stderr)
-    
     assert result.returncode == 0, f"Expected return code 0, but got {result.returncode}. STDERR: {result.stderr}"
     assert f"Dependencies for: main.py" in result.stdout
     assert "utils" in result.stdout # Depends on 'main.py' importing 'utils'
@@ -130,9 +124,6 @@ def test_context_command(setup_test_project: Path):
     file1 = setup_test_project / "src" / "main.py"
     file2 = setup_test_project / "src" / "utils.py"
     result = run_cli_command(["context", str(file1), str(file2)], cwd=setup_test_project)
-
-    print("Context STDOUT:", result.stdout)
-    print("Context STDERR:", result.stderr)
 
     assert result.returncode == 0, f"Expected return code 0, but got {result.returncode}. STDERR: {result.stderr}"
     # Check if the content of both files is present in the output
@@ -168,8 +159,6 @@ def test_context_command(setup_test_project: Path):
 def test_list_command(setup_test_project: Path):
     """Tests the 'kotemari list' command."""
     result = run_cli_command(["list", "."], cwd=setup_test_project)
-    print("List STDOUT:", result.stdout)
-    print("List STDERR:", result.stderr)
     assert result.returncode == 0, f"Expected return code 0, got {result.returncode}"
     assert "Files:" in result.stdout
     assert ".gitignore" in result.stdout
@@ -180,8 +169,6 @@ def test_list_command(setup_test_project: Path):
 def test_tree_command(setup_test_project: Path):
     """Tests the 'kotemari tree' command."""
     result = run_cli_command(["tree", "."], cwd=setup_test_project)
-    print("Tree STDOUT:", result.stdout)
-    print("Tree STDERR:", result.stderr)
     assert result.returncode == 0, f"Expected return code 0, got {result.returncode}"
     project_dir_name = setup_test_project.name
     assert project_dir_name in result.stdout

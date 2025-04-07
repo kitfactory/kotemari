@@ -48,7 +48,6 @@ kotemari = "kotemari.gateway.cli_parser:main"
 [tool.pytest.ini_options]
 testpaths = [
     "tests",
-    "tests/integration", # Add integration test path
 ]
 python_files = ["test_*.py"]
 pythonpath = ["src"]

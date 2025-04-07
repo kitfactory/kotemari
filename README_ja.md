@@ -58,6 +58,66 @@ kotemari analyze --no-use-cache
 
 その他のオプションについては、`kotemari --help` または `kotemari [COMMAND] --help` を使用してください。
 
+## <0xF0><0x9F><0x92><0xBB> ライブラリとしての利用 (Python)
+
+Kotemari は Python スクリプト内で直接使用することもできます:
+
+```python
+from pathlib import Path
+from kotemari import Kotemari
+
+# プロジェクトルートディレクトリを指定して初期化
+project_path = Path("/path/to/your/project")
+kotemari = Kotemari(project_root=project_path, use_cache=True)
+
+# 1. プロジェクトを分析 (他のほとんどの操作の前に必要)
+try:
+    analyzed_files = kotemari.analyze_project()
+    print(f"分析されたファイル数: {len(analyzed_files)}")
+except Exception as e: # KotemariError またはそのサブクラスを捕捉
+    print(f"分析中のエラー: {e}")
+    exit()
+
+# 2. 分析されたファイルを一覧表示
+try:
+    file_list = kotemari.list_files(relative=True)
+    print("\n分析されたファイル:")
+    for f in file_list:
+        print(f"- {f}")
+except Exception as e: # 例: analyze が呼ばれていない場合の AnalysisError
+    print(f"ファイル一覧表示中のエラー: {e}")
+
+# 3. 特定ファイルの依存関係を取得
+try:
+    # 存在しないファイルや分析対象外のファイルを指定するとエラーになります
+    dependencies = kotemari.get_dependencies("src/module/my_file.py") 
+    print("\nsrc/module/my_file.py の依存関係:")
+    for dep in dependencies:
+        print(f"- {dep.module_name} ({dep.dependency_type.name})")
+except Exception as e: # 例: FileNotFoundErrorInAnalysis
+    print(f"依存関係取得中のエラー: {e}")
+
+# 4. ファイルのコンテキストを生成 (依存関係を含む)
+try:
+    # 存在しないファイルや分析対象外のファイルを指定するとエラーになります
+    context = kotemari.get_context(["src/module/my_file.py"])
+    print("\n生成されたコンテキスト:")
+    print("-"*20)
+    print(context)
+    print("-"*20)
+except Exception as e: # 例: FileNotFoundErrorInAnalysis, ContextGenerationError
+    print(f"コンテキスト生成中のエラー: {e}")
+
+# ツリー構造を取得することも可能 (ライブラリ利用では稀)
+# try:
+#     tree_str = kotemari.get_tree()
+#     print("\nプロジェクトツリー:")
+#     print(tree_str)
+# except Exception as e:
+#     print(f"ツリー取得中のエラー: {e}")
+
+```
+
 ## <0xF0><0x9F><0x92><0xBB> 要件
 
 *   **Python:** 3.9 以上

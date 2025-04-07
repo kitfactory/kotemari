@@ -60,6 +60,64 @@ kotemari analyze --no-use-cache
 
 For more options, use `kotemari --help` or `kotemari [COMMAND] --help`.
 
+## <0xF0><0x9F><0x92><0xBB> Library Usage (Python)
+
+You can also use Kotemari directly within your Python scripts:
+
+```python
+from pathlib import Path
+from kotemari import Kotemari
+
+# Initialize with the project root directory
+project_path = Path("/path/to/your/project")
+kotemari = Kotemari(project_root=project_path, use_cache=True)
+
+# 1. Analyze the project (required before most other operations)
+try:
+    analyzed_files = kotemari.analyze_project()
+    print(f"Analyzed {len(analyzed_files)} files.")
+except Exception as e: # Catch KotemariError or its subclasses
+    print(f"Error during analysis: {e}")
+    exit()
+
+# 2. List analyzed files
+try:
+    file_list = kotemari.list_files(relative=True)
+    print("\nAnalyzed Files:")
+    for f in file_list:
+        print(f"- {f}")
+except Exception as e: # e.g., AnalysisError if analyze wasn't called
+    print(f"Error listing files: {e}")
+
+# 3. Get dependencies for a specific file
+try:
+    dependencies = kotemari.get_dependencies("src/module/my_file.py")
+    print("\nDependencies for src/module/my_file.py:")
+    for dep in dependencies:
+        print(f"- {dep.module_name} ({dep.dependency_type.name})")
+except Exception as e: # e.g., FileNotFoundErrorInAnalysis
+    print(f"Error getting dependencies: {e}")
+
+# 4. Generate context for a file (includes dependencies)
+try:
+    context = kotemari.get_context(["src/module/my_file.py"])
+    print("\nGenerated Context:")
+    print("-"*20)
+    print(context)
+    print("-"*20)
+except Exception as e: # e.g., FileNotFoundErrorInAnalysis, ContextGenerationError
+    print(f"Error generating context: {e}")
+
+# You can also get the tree structure (less common for library usage)
+# try:
+#     tree_str = kotemari.get_tree()
+#     print("\nProject Tree:")
+#     print(tree_str)
+# except Exception as e:
+#     print(f"Error getting tree: {e}")
+
+```
+
 ## <0xF0><0x9F><0x92><0xBB> Requirements
 
 *   **Python:** 3.9 or higher

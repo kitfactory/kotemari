@@ -113,63 +113,55 @@ def context(
 
 # New CLI command to list files in the project directory
 @app.command("list")
-def list_files(project_root: str):
-    """Lists all files in the given project root.
-    指定されたプロジェクトルート内の全ファイルを一覧表示します。
-
-    Args:
-        project_root (str): The path to the project directory.
-                              プロジェクトディレクトリへのパス。
+def list_cmd(
+    project_root: Annotated[
+        str,
+        typer.Argument(..., help="The root directory of the project to list files from.", show_default=False)
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option("--config", "-c", help="Path to the .kotemari.yml config file.", show_default=False)
+    ] = None,
+    use_cache: Annotated[
+        bool,
+        typer.Option(help="Use cached analysis results if available.")
+    ] = True,
+):
+    """Lists all files in the given project root (respecting ignore rules).
+    指定されたプロジェクトルート内の全ファイルを一覧表示します（無視ルール適用後）。
     """
-    from pathlib import Path
-    p = Path(project_root)
-    if not p.exists():
-        typer.echo(f"Project directory {project_root} does not exist.")
-        raise typer.Exit(code=1)
-    files = [f.relative_to(p).as_posix() for f in p.glob("**/*") if f.is_file()]
-    typer.echo("Files:")
-    for file in sorted(files):
-        typer.echo(file)
+    project_path = Path(project_root)
+    if not project_path.is_absolute():
+        project_path = project_path.resolve()
+    config_file_path = Path(config) if config else None
+    controller = CliController(project_path, config_file_path, use_cache)
+    controller.display_list()
 
 # New CLI command to display the tree structure of the project directory
 @app.command("tree")
-def tree_files(project_root: str):
-    """Displays the tree structure of the project directory.
-    プロジェクトディレクトリのツリー構造を表示します。
-
-    Args:
-        project_root (str): The path to the project directory.
-                              プロジェクトディレクトリへのパス。
+def tree_cmd(
+    project_root: Annotated[
+        str,
+        typer.Argument(..., help="The root directory of the project to display the tree for.", show_default=False)
+    ],
+    config: Annotated[
+        str | None,
+        typer.Option("--config", "-c", help="Path to the .kotemari.yml config file.", show_default=False)
+    ] = None,
+    use_cache: Annotated[
+        bool,
+        typer.Option(help="Use cached analysis results if available.")
+    ] = True,
+):
+    """Displays the tree structure of the project directory (respecting ignore rules).
+    プロジェクトディレクトリのツリー構造を表示します（無視ルール適用後）。
     """
-    from pathlib import Path
-    p = Path(project_root)
-    if not p.is_absolute():
-        p = p.resolve()
-    if not p.exists():
-        typer.echo(f"Project directory {project_root} does not exist.")
-        raise typer.Exit(code=1)
-
-    def rec_tree(path: Path, prefix: str = ""):
-        """Recursively prints the tree structure.
-        ツリー構造を再帰的に表示します。
-
-        Args:
-            path (Path): Current directory path.
-                         現在のディレクトリのパス。
-            prefix (str): The prefix for the current tree level.
-                         現在のツリーレベルのプレフィックス。
-        """
-        children = list(path.iterdir())
-        children.sort(key=lambda x: x.name)
-        for i, child in enumerate(children):
-            connector = "└── " if i == len(children)-1 else "├── "
-            typer.echo(prefix + connector + child.name)
-            if child.is_dir():
-                extension = "    " if i == len(children)-1 else "│   "
-                rec_tree(child, prefix + extension)
-
-    typer.echo(f"{p.name}\n")
-    rec_tree(p)
+    project_path = Path(project_root)
+    if not project_path.is_absolute():
+        project_path = project_path.resolve()
+    config_file_path = Path(config) if config else None
+    controller = CliController(project_path, config_file_path, use_cache)
+    controller.display_tree()
 
 # --- Entry point for CLI --- 
 def main():

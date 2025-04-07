@@ -2,10 +2,12 @@ import pytest
 from pathlib import Path
 import datetime
 import os
+from unittest.mock import patch, MagicMock
 
 from kotemari.utility.path_resolver import PathResolver
 from kotemari.gateway.file_system_accessor import FileSystemAccessor
 from kotemari.domain.file_info import FileInfo
+from kotemari.domain.exceptions import FileSystemError
 
 # Helper to create a file structure for testing scan_directory
 # scan_directory テスト用のファイル構造を作成するヘルパー
@@ -52,7 +54,7 @@ def test_read_file_not_found(setup_test_directory: Path, accessor: FileSystemAcc
     存在しないファイルを読み取り、FileNotFoundErrorを期待するテスト。
     """
     file_path = setup_test_directory / "non_existent.txt"
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileSystemError, match="File not found"):
         accessor.read_file(file_path)
 
 def test_read_file_io_error(setup_test_directory: Path, accessor: FileSystemAccessor):
@@ -65,7 +67,7 @@ def test_read_file_io_error(setup_test_directory: Path, accessor: FileSystemAcce
     # 具体的な例外は異なる場合がある（例: LinuxではIsADirectoryError、WindowsではPermissionError）
     # We expect *some* kind of IOError or OSError during the open/read attempt.
     # open/read試行中に *何らかの* IOErrorまたはOSErrorが発生することを期待する。
-    with pytest.raises((IOError, OSError)):
+    with pytest.raises(FileSystemError, match="Error reading file.*?Permission denied"):
         accessor.read_file(dir_path)
 
 # --- Tests for scan_directory --- #
@@ -153,5 +155,7 @@ def test_scan_non_existent_directory(accessor: FileSystemAccessor):
     Tests scanning a non-existent directory.
     存在しないディレクトリをスキャンするテスト。
     """
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(FileSystemError, match="Directory not found"):
+        # Need to consume the iterator to trigger the exception
+        # 例外をトリガーするにはイテレータを消費する必要があります
         list(accessor.scan_directory("./non_existent_dir_xyz")) 

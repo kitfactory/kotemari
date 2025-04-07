@@ -13,6 +13,7 @@ from ..service.language_detector import LanguageDetector
 from ..service.ast_parser import AstParser # AstParser をインポート
 from ..utility.path_resolver import PathResolver
 from ..usecase.config_manager import ConfigManager
+from ..domain.exceptions import AnalysisError, ParsingError, FileSystemError # カスタム例外をインポート
 
 logger = logging.getLogger(__name__)
 
@@ -118,17 +119,32 @@ class ProjectAnalyzer:
                         # dependencies will remain the default empty list
                     except Exception as e:
                         logger.error(f"Unexpected error parsing dependencies for {file_info.path}: {e}", exc_info=True)
-                        # dependencies will remain the default empty list
+                        # Optionally re-raise as AnalysisError or ParsingError?
+                        # For now, log and continue, keeping dependencies empty.
+                        # オプションで AnalysisError または ParsingError として再発生させますか？
+                        # 今のところ、ログに記録して続行し、依存関係を空のままにします。
+                        pass # Keep dependencies empty
 
                 analyzed_files.append(file_info)
                 logger.debug(f"Processed file: {file_info.path.relative_to(self.project_root)}")
 
-        except FileNotFoundError:
+        except FileNotFoundError as e:
+            # This case should ideally be caught by fs_accessor.scan_directory raising FileSystemError
+            # このケースは理想的には fs_accessor.scan_directory が FileSystemError を発生させることで捕捉されるべきです
             logger.error(f"Project root directory not found: {self.project_root}")
-            return []
-        except Exception as e:
+            # Re-raise as AnalysisError with a specific message
+            # 特定のメッセージを持つ AnalysisError として再発生させます
+            raise AnalysisError(f"Project root directory not found: {self.project_root}") from e
+        except FileSystemError as e: # Catch errors from scan_directory (like dir not found)
+            logger.error(f"OS error during file scanning in {self.project_root}: {e}", exc_info=True)
+            # Re-raise as AnalysisError for the caller
+            # 呼び出し元のために AnalysisError として再発生させます
+            raise AnalysisError(f"Error scanning project directory: {e}") from e
+        except Exception as e: # Catch other unexpected errors during the overall analysis
             logger.error(f"An unexpected error occurred during project analysis: {e}", exc_info=True)
-            return analyzed_files
+            # Raise a general AnalysisError for unexpected issues
+            # 予期しない問題に対して一般的な AnalysisError を発生させます
+            raise AnalysisError(f"An unexpected error occurred during analysis: {e}") from e
 
         logger.info(f"Analysis complete. Found {len(analyzed_files)} non-ignored files.")
         return analyzed_files 

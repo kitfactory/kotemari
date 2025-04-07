@@ -2,10 +2,14 @@ from pathlib import Path
 import os
 import datetime
 from typing import Iterator, List, Callable # Iterator, List, Callable をインポート
+import sys
+import logging
 
 from ..domain.file_info import FileInfo
 from ..utility.path_resolver import PathResolver
+from ..domain.exceptions import FileSystemError # カスタム例外をインポート
 
+logger = logging.getLogger(__name__)
 
 class FileSystemAccessor:
     """
@@ -47,14 +51,19 @@ class FileSystemAccessor:
         try:
             with open(abs_path, 'r', encoding='utf-8') as f:
                 return f.read()
-        except FileNotFoundError:
-            # Re-raise with a more informative message or specific exception type if needed
-            # 必要に応じて、より情報量の多いメッセージや特定の例外タイプで再発生させる
-            raise
-        except Exception as e:
+        except FileNotFoundError as e:
+            # Wrap FileNotFoundError in our custom FileSystemError
+            # FileNotFoundError をカスタム FileSystemError でラップします
+            logger.warning(f"File not found during read: {abs_path}")
+            raise FileSystemError(f"File not found: {abs_path}") from e
+        except IOError as e: # Catch potential encoding errors or other read issues
+            logger.error(f"IOError reading file {abs_path}: {e}")
+            raise FileSystemError(f"Error reading file {abs_path}: {e}") from e
+        except Exception as e: # Catch other unexpected errors
             # Catch potential encoding errors or other read issues
             # エンコーディングエラーやその他の読み取り問題をキャッチする
-            raise IOError(f"Error reading file {abs_path}: {e}") from e
+            logger.exception(f"Unexpected error reading file {abs_path}: {e}")
+            raise FileSystemError(f"Unexpected error reading file {abs_path}: {e}") from e
 
     def scan_directory(self, dir_path: Path | str, ignore_func: Callable[[Path], bool] | None = None) -> Iterator[FileInfo]:
         """
@@ -82,7 +91,9 @@ class FileSystemAccessor:
         """
         abs_dir_path = self.path_resolver.resolve_absolute(dir_path)
         if not abs_dir_path.is_dir():
-            raise FileNotFoundError(f"Directory not found: {abs_dir_path}")
+            # Raise custom FileSystemError if directory not found
+            # ディレクトリが見つからない場合にカスタム FileSystemError を発生させます
+            raise FileSystemError(f"Directory not found: {abs_dir_path}")
 
         for root, dirs, files in os.walk(abs_dir_path, topdown=True):
             root_path = Path(root)
@@ -107,12 +118,14 @@ class FileSystemAccessor:
                     mtime = datetime.datetime.fromtimestamp(stat_result.st_mtime, tz=datetime.timezone.utc)
                     size = stat_result.st_size
                     yield FileInfo(path=file_path, mtime=mtime, size=size)
-                except OSError:
+                except OSError as e:
                     # Handle potential errors like permission denied during stat
                     # stat中の権限拒否などの潜在的なエラーを処理する
                     # Log this error? For now, skip the file.
                     # このエラーをログに記録しますか？今のところ、ファイルをスキップします。
-                    # print(f"Warning: Could not access file info for {file_path}", file=sys.stderr)
+                    logger.warning(f"Could not access file info for {file_path}: {e}")
+                    # Optionally raise FileSystemError here? Decide based on desired strictness.
+                    # オプションでここで FileSystemError を発生させますか？望ましい厳格さに基づいて決定します。
                     pass 
 
     def exists(self, file_path: Path | str) -> bool:

@@ -1,11 +1,14 @@
 from pathlib import Path
 from typing import List, Dict, Optional
+import logging
+from ..domain.exceptions import ContextGenerationError, FileNotFoundErrorInAnalysis
+from ..domain.file_content_formatter import FileContentFormatter, BasicFileContentFormatter
+from ..domain.context_data import ContextData
+from ..gateway.file_system_accessor import FileSystemAccessor
 
-from kotemari.domain.context_data import ContextData
-from kotemari.domain.file_content_formatter import FileContentFormatter, BasicFileContentFormatter
-from kotemari.gateway.file_system_accessor import FileSystemAccessor
-# TODO: Import Kotemari core or relevant parts if needed for dependency lookup
-# from kotemari.core import Kotemari # Or specific cache/dependency access mechanism
+# Configure logging for this module
+# このモジュール用にロギングを設定します
+logger = logging.getLogger(__name__)
 
 class ContextBuilder:
     """
@@ -65,9 +68,18 @@ class ContextBuilder:
         """
         # English: Validate that all target files exist first.
         # 日本語: まず、すべてのターゲットファイルが存在することを確認します。
-        for file_path in target_files:
-            if not self.file_accessor.exists(str(file_path)):
-                raise FileNotFoundError(f"Target file not found: {file_path}")
+        # This check is now primarily handled in Kotemari.get_context using FileNotFoundErrorInAnalysis
+        # based on the analysis results. We keep a basic filesystem check here as a fallback/defense.
+        # このチェックは、Kotemari.get_context 内で FileNotFoundErrorInAnalysis を使用して
+        # 分析結果に基づいて主に処理されるようになりました。フォールバック/防御として、
+        # ここに基本的なファイルシステムチェックを残します。
+        # for file_path in target_files:
+        #     if not self.file_accessor.exists(str(file_path)):
+        #         # Raising FileNotFoundError here might be misleading if the file was just ignored.
+        #         # Use a more specific error if needed, or rely on the Kotemari core check.
+        #         # ファイルが単に無視された場合、ここで FileNotFoundError を発生させると誤解を招く可能性があります。
+        #         # 必要に応じてより具体的なエラーを使用するか、Kotemari コアのチェックに依存します。
+        #         raise FileNotFoundError(f"Target file not found on filesystem: {file_path}")
 
         # TODO: Implement logic to find related files based on dependencies using self.kotemari_core
         #       依存関係に基づいて関連ファイルを見つけるロジックを self.kotemari_core を使用して実装します
@@ -79,22 +91,22 @@ class ContextBuilder:
         file_contents: Dict[Path, str] = {}
         try:
             for file_path in sorted(list(all_files_to_include)): # Sort for consistent read order
-                # English: Pass project_root to read_file for potential relative path resolution within accessor
-                # 日本語: アクセサ内での潜在的な相対パス解決のために project_root を read_file に渡します
                 # Corrected call: project_root is not needed here as PathResolver handles it.
                 # 修正後の呼び出し: PathResolver が処理するため、ここでは project_root は不要です。
                 file_contents[file_path] = self.file_accessor.read_file(str(file_path))
-        except FileNotFoundError as e:
-            # English: File existence is checked before this loop, but handle just in case.
-            # 日本語: ファイルの存在はこのループの前にチェックされますが、念のため処理します。
+        except FileNotFoundError as e: # Error from file_accessor.read_file
+            # This indicates a problem accessing a file that *should* exist based on earlier checks or analysis results.
+            # これは、以前のチェックまたは分析結果に基づいて存在する*はず*のファイルへのアクセスに問題があることを示します。
             logger.error(f"Error reading file, should have existed: {e}")
-        except (IOError) as e:
-            # English: Re-raise IOErrors during reading phase.
-            # 日本語: 読み取りフェーズ中のIOErrorを再発生させます。
-            # Consider more specific error handling or logging here.
-            # ここでより具体的なエラー処理またはロギングを検討します。
-            raise IOError(f"Error reading file content: {e}") from e
-
+            # Wrap in ContextGenerationError
+            # ContextGenerationError でラップします
+            raise ContextGenerationError(f"Error accessing file content: {e}") from e
+        except IOError as e: # Error from file_accessor.read_file
+            logger.error(f"IOError reading file content: {e}")
+            raise ContextGenerationError(f"Error reading file content: {e}") from e
+        except Exception as e: # Catch any other unexpected errors during file reading
+            logger.exception(f"Unexpected error reading files for context: {e}")
+            raise ContextGenerationError(f"Unexpected error during file reading: {e}") from e
 
         # English: Format the collected content.
         # 日本語: 収集したコンテンツをフォーマットします。

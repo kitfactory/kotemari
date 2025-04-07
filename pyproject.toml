@@ -4,18 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "kotemari"
-version = "0.0.1"
+version = "0.1.0"
 authors = [
-  { name="Your Name", email="you@example.com" }, # TODO: 作者情報を更新してください
+  { name="Your Name", email="your.email@example.com" }, # Replace with your info / あなたの情報に置き換えてください
 ]
-description = "A library to analyze project structure and generate context for LLMs." # TODO: 説明をより詳細に記述してください
+description = "Kotemari: A Python library and CLI tool to analyze codebases, understand dependencies, and generate accurate context for LLMs. Simplifies RAG generation for coding tasks."
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License", # TODO: ライセンスを決定してください
+    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
 ]
 dependencies = [
     # ここに実行時依存ライブラリを追加します
@@ -29,16 +33,16 @@ keywords = ["python", "project analysis", "dependency", "context generation", "l
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
+    "pytest>=8.3.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.10.0",
     "uv>=0.1.0", # uv 自体も開発依存に追加しておくと便利です
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/kotemari" # Replace with actual URL
-"Bug Tracker" = "https://github.com/your-username/kotemari/issues" # TODO: IssueトラッカーのURLを更新してください
-Repository = "https://github.com/yourusername/kotemari" # Replace with actual URL
+"Homepage" = "https://github.com/your-username/kotemari" # Replace with actual URL / 実際のURLに置き換えてください
+"Bug Tracker" = "https://github.com/your-username/kotemari/issues" # Replace with actual URL / 実際のURLに置き換えてください
+Repository = "https://github.com/your-username/kotemari" # Replace with actual URL / 実際のURLに置き換えてください
 
 [project.scripts]
 # English: Define the entry point for the CLI application.

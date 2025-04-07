@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import List, Optional
 import logging
+import sys
+import traceback
 
 from rich.console import Console
 from rich.table import Table
@@ -8,10 +10,14 @@ from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.text import Text
 from rich import box
+from rich.tree import Tree
 
 from ..core import Kotemari
 from ..domain.dependency_info import DependencyType
+from ..domain.file_info import FileInfo
 import typer # Typer needed for exit
+
+from ..domain.exceptions import KotemariError, FileNotFoundErrorInAnalysis # Import custom exceptions
 
 # English: Use rich for better console output formatting.
 # 日本語: より良いコンソール出力フォーマットのために rich を使用します。
@@ -74,27 +80,23 @@ class CliController:
         """
         instance = self._get_kotemari_instance()
         try:
-            analysis_results = instance.analyze_project()
-            
-            logger.info("Analysis complete.")
-
-            # Display summary in a table
-            table = Table(title="Analysis Summary", show_header=False, box=box.ROUNDED)
-            # table.add_row("Project Root", str(instance.project_root))
-            # table.add_row("Config File", str(instance.config_path) if instance.config_path else "Default")
-            # table.add_row("Cache Status", "Enabled" if instance.use_cache else "Disabled")
-            # table.add_row("Cache File", str(instance.cache_manager.cache_file_path) if instance.use_cache else "N/A")
-            table.add_row("Total Files Analyzed", str(len(analysis_results))) # Corrected: Get length of the list directly
-
-            console.print(table)
-        except FileNotFoundError as e:
-            logger.error(f"Target file not found in analysis: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
+            analyzed_files = instance.analyze_project(force_reanalyze=False)
+            self._display_analysis_summary(analyzed_files)
+        except KotemariError as e:
+            console.print(f"[bold red]Analysis Error:[/bold red] {e}")
             raise typer.Exit(code=1)
         except Exception as e:
-            logger.exception(f"Error during analysis: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Analysis failed: {e}")
+            console.print(f"[bold red]An unexpected error occurred during analysis:[/bold red] {e}")
+            console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
+
+    def _display_analysis_summary(self, analyzed_files: list):
+        """Displays the analysis summary in a table format.
+        解析結果の要約をテーブル形式で表示します。
+        """
+        table = Table(title="Analysis Summary", show_header=False, box=box.ROUNDED)
+        table.add_row("Total Files Analyzed", str(len(analyzed_files)))
+        self.console.print(table)
 
     def show_dependencies(self, target_file_path: str):
         """
@@ -146,13 +148,16 @@ class CliController:
 
             self.console.print(table)
 
-        except FileNotFoundError as e:
-            logger.error(f"Target file not found in analysis: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
+        except FileNotFoundErrorInAnalysis as e:
+            console.print(f"[bold red]Dependency Error:[/bold red] {e}")
+            console.print(f"Hint: Have you run 'kotemari analyze' for this project yet?")
+            raise typer.Exit(code=1)
+        except KotemariError as e:
+            console.print(f"[bold red]Dependency Error:[/bold red] {e}")
             raise typer.Exit(code=1)
         except Exception as e:
-            logger.exception(f"Error getting dependencies: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Failed to get dependencies: {e}")
+            console.print(f"[bold red]An unexpected error occurred while getting dependencies:[/bold red] {e}")
+            console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
 
     def generate_context(self, target_file_paths: List[str]):
@@ -176,17 +181,108 @@ class CliController:
             # self.console.print(Panel(context_string, title="Generated Context", border_style="blue"))
             self.console.print(context_string) # Direct print as per current formatter output
 
-        except FileNotFoundError as e:
-            logger.error(f"Target file not found for context generation: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Target file not found: {e}")
+        except FileNotFoundErrorInAnalysis as e:
+            console.print(f"[bold red]Error generating context:[/bold red] {e}")
+            console.print(f"Hint: Make sure the file exists and was included in the analysis.")
+            raise typer.Exit(code=1)
+        except KotemariError as e:
+            console.print(f"[bold red]Context Generation Error:[/bold red] {e}")
             raise typer.Exit(code=1)
         except Exception as e:
-            logger.exception(f"Error generating context: {e}")
-            self.console.print(f"[bold red]Error:[/bold red] Failed to generate context: {e}")
+            console.print(f"[bold red]An unexpected error occurred during context generation:[/bold red] {e}")
+            console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
 
-    # TODO: Implement methods for list, tree, watch commands
-    #       list, tree, watch コマンド用のメソッドを実装します
+    def display_list(self):
+        """Analyzes the project and displays the list of files (respecting ignores).
+        プロジェクトを解析し、ファイルリスト（無視ルール適用後）を表示します。
+        """
+        try:
+            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project() # Ensure analysis is done
+            if not analyzed_files:
+                self.console.print("No files found in the project (after applying ignore rules).")
+                return
+
+            self.console.print("Files (respecting ignore rules):")
+            # Extract relative paths and sort them
+            # 相対パスを抽出し、ソートします
+            relative_paths = sorted([str(file_info.path.relative_to(self.project_root).as_posix()) for file_info in analyzed_files])
+            for path_str in relative_paths:
+                self.console.print(path_str)
+
+        except KotemariError as e:
+            self.console.print(f"[bold red]Error listing files:[/bold red] {e}")
+            raise typer.Exit(code=1)
+        except Exception as e:
+            self.console.print(f"[bold red]An unexpected error occurred while listing files:[/bold red] {e}")
+            self.console.print_exception(show_locals=True)
+            raise typer.Exit(code=1)
+
+    def display_tree(self):
+        """Analyzes the project and displays the file tree (respecting ignores).
+        プロジェクトを解析し、ファイルツリー（無視ルール適用後）を表示します。
+        """
+        try:
+            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project() # Ensure analysis is done
+            if not analyzed_files:
+                self.console.print("No files found to build tree (after applying ignore rules).")
+                return
+
+            tree = Tree(f":open_file_folder: [link file://{self.project_root}]{self.project_root.name}")
+
+            # Build a directory structure from the file paths
+            # ファイルパスからディレクトリ構造を構築します
+            structure: dict = {}
+            relative_paths = sorted([file_info.path.relative_to(self.project_root) for file_info in analyzed_files])
+
+            for path in relative_paths:
+                current_level = structure
+                parts = path.parts
+                for i, part in enumerate(parts):
+                    if i == len(parts) - 1: # It's a file
+                        current_level[part] = None # Mark as file
+                    else: # It's a directory
+                        if part not in current_level:
+                            current_level[part] = {}
+                        current_level = current_level[part]
+
+            # Recursively build the rich Tree
+            # rich Tree を再帰的に構築します
+            def add_nodes(branch: Tree, structure_level: dict):
+                items = sorted(structure_level.items())
+                for i, (name, content) in enumerate(items):
+                    is_last = i == len(items) - 1
+                    style = "" if is_last else "dim"
+                    if content is None: # File
+                        branch.add(f":page_facing_up: {name}", style=style)
+                    else: # Directory
+                        new_branch = branch.add(f":folder: {name}", style=style)
+                        add_nodes(new_branch, content)
+
+            add_nodes(tree, structure)
+            self.console.print(tree)
+
+        except KotemariError as e:
+            # Use standard traceback printing to stderr for better capture by subprocess
+            # subprocess によるキャプチャ向上のため、標準の traceback を stderr に出力します
+            print(f"[bold red]Error displaying tree:[/bold red]", file=sys.stderr)
+            print(f"Exception Type: {type(e).__name__}", file=sys.stderr)
+            print(f"Exception Details: {e}", file=sys.stderr)
+            print("Traceback:", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            raise typer.Exit(code=1)
+        except Exception as e:
+            console = Console()
+            console.print(f"[bold red]An unexpected error occurred while displaying tree:[/bold red] {e}")
+            console.print_exception(show_locals=True)
+            raise typer.Exit(code=1)
+
+    def start_watching(self, targets: list[str] | None = None):
+        """Starts watching the project directory for changes.
+        プロジェクトディレクトリの変更監視を開始します。
+        """
+        # Implementation of start_watching method
+        pass
 
 # --- Integration with Typer App --- 
 # English: Remove the outdated controller instantiation.

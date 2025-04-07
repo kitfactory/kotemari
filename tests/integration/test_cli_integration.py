@@ -160,7 +160,9 @@ def test_list_command(setup_test_project: Path):
     """Tests the 'kotemari list' command."""
     result = run_cli_command(["list", "."], cwd=setup_test_project)
     assert result.returncode == 0, f"Expected return code 0, got {result.returncode}"
-    assert "Files:" in result.stdout
+    # Check for the correct header including the note about ignore rules
+    # 無視ルールに関する注記を含む正しいヘッダーを確認します
+    assert "Files (respecting ignore rules):" in result.stdout
     assert ".gitignore" in result.stdout
     assert "src/main.py" in result.stdout
     assert "src/utils.py" in result.stdout

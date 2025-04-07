@@ -17,6 +17,7 @@ from kotemari.service.hash_calculator import HashCalculator
 from kotemari.service.language_detector import LanguageDetector
 from kotemari.service.ast_parser import AstParser
 from kotemari.usecase.config_manager import ConfigManager
+from kotemari.domain.exceptions import AnalysisError, FileSystemError # Import custom exceptions
 
 # Fixture for a basic PathResolver
 @pytest.fixture
@@ -206,8 +207,12 @@ def test_analyze_project_not_found(tmp_path, path_resolver):
     """
     non_existent_root = tmp_path / "non_existent_project"
     analyzer = ProjectAnalyzer(non_existent_root, path_resolver=path_resolver)
-    results = analyzer.analyze()
-    assert results == [] # Should return empty list
+    # Expect AnalysisError (caused by FileSystemError) when project root not found
+    # プロジェクトルートが見つからない場合、AnalysisError（FileSystemErrorが原因）を期待します
+    # Update the match message based on the refined exception handling in ProjectAnalyzer
+    # ProjectAnalyzer の調整された例外処理に基づいて match メッセージを更新します
+    with pytest.raises(AnalysisError, match="Error scanning project directory: Directory not found"):
+        analyzer.analyze()
 
 def test_analyze_integration_with_dependency_parsing(setup_analyzer_test_project, path_resolver):
     """

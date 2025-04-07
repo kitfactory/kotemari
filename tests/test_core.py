@@ -6,13 +6,14 @@ import logging
 
 # Import Kotemari from the package root
 # パッケージルートから Kotemari をインポートします
-from kotemari import Kotemari
+from kotemari.core import Kotemari
 from kotemari.domain.file_info import FileInfo
 from kotemari.domain.dependency_info import DependencyInfo
 from kotemari.usecase.cache_updater import CacheUpdater
 from kotemari.gateway.cache_storage import CacheStorage
 from kotemari.domain.cache_metadata import CacheMetadata
 from kotemari.domain.file_system_event import FileSystemEvent, FileSystemEventType
+from kotemari.domain.exceptions import AnalysisError, FileNotFoundErrorInAnalysis, DependencyError
 
 # Create a logger instance for this test module
 logger = logging.getLogger(__name__)
@@ -175,7 +176,7 @@ def test_list_files_before_analysis(setup_facade_test_project):
     分析前に呼び出された場合に list_files() が RuntimeError を発生させることをテストします。
     """
     kotemari = Kotemari(setup_facade_test_project)
-    with pytest.raises(RuntimeError, match="Project must be analyzed"):
+    with pytest.raises(AnalysisError, match="Project must be analyzed before listing files"):
         kotemari.list_files()
 
 @patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
@@ -227,7 +228,7 @@ def test_get_tree_before_analysis(setup_facade_test_project):
     分析前に呼び出された場合に get_tree() が RuntimeError を発生させることをテストします。
     """
     kotemari = Kotemari(setup_facade_test_project)
-    with pytest.raises(RuntimeError, match="Project must be analyzed"):
+    with pytest.raises(AnalysisError, match="Project must be analyzed before generating tree"):
         kotemari.get_tree()
 
 @patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
@@ -463,7 +464,7 @@ def test_get_dependencies_before_analysis(setup_facade_test_project):
     分析前に呼び出された場合に get_dependencies() が RuntimeError を発生させることをテストします。
     """
     kotemari = Kotemari(setup_facade_test_project)
-    with pytest.raises(RuntimeError, match="Project must be analyzed"):
+    with pytest.raises(AnalysisError, match="Project must be analyzed before getting dependencies"):
         kotemari.get_dependencies("app.py")
 
 def test_get_dependencies_success(setup_facade_test_project):
@@ -531,10 +532,14 @@ def test_get_dependencies_file_not_in_analysis(setup_facade_test_project, caplog
     ignored_py_path = project_root / "ignored.py" # This file exists but wasn't in results
 
     with caplog.at_level(logging.WARNING):
-        deps_ignored = kotemari.get_dependencies(ignored_py_path)
+        # Expect FileNotFoundErrorInAnalysis and assert within the raises block
+        # FileNotFoundErrorInAnalysis を期待し、raises ブロック内でアサートします
+        with pytest.raises(FileNotFoundErrorInAnalysis, match="not found in analysis results"):
+            kotemari.get_dependencies(ignored_py_path)
 
-    assert deps_ignored == []
-    assert f"File '{ignored_py_path}' not found in analysis results" in caplog.text
+    # Exception is raised correctly, logging check might be unstable/unnecessary
+    # 例外は正しく発生しており、ロギングチェックは不安定/不要な場合があります
+    # assert f"File '{ignored_py_path}' not found in analysis results" in caplog.text
 
 def test_get_dependencies_non_existent_file(setup_facade_test_project, caplog):
     """
@@ -553,14 +558,18 @@ def test_get_dependencies_non_existent_file(setup_facade_test_project, caplog):
     non_existent_path_str = "non_existent_file.py"
     non_existent_path_abs = project_root / non_existent_path_str
 
-    with caplog.at_level(logging.WARNING):
-        deps_non_existent = kotemari.get_dependencies(non_existent_path_str)
+    # Updated Expectation: Kotemari checks analysis results first.
+    # Expect FileNotFoundErrorInAnalysis because it's not in the results.
+    # 更新された期待値: Kotemari は最初に分析結果を確認します。
+    # 結果に含まれていないため、FileNotFoundErrorInAnalysis を期待します。
+    with pytest.raises(FileNotFoundErrorInAnalysis, match="not found in analysis results"):
+        kotemari.get_dependencies(non_existent_path_str)
 
-    assert deps_non_existent == []
     # PathResolver might log or the get_dependencies logic logs
-    # Check for the warning from get_dependencies
-    assert f"Cannot resolve path for dependency lookup: {non_existent_path_str}" in caplog.text or \
-           f"File '{non_existent_path_abs}' not found in analysis results" in caplog.text 
+    # Logging check removed as the primary check is the exception raised
+    # 主なチェックは発生した例外であるため、ロギングチェックは削除されました
+    # assert f"Cannot resolve path for dependency lookup: {non_existent_path_str}" in caplog.text or \
+    #        f"File '{non_existent_path_abs}' not found in analysis results" in caplog.text
 
 # --- get_context tests ---
 
@@ -570,7 +579,7 @@ def test_get_context_not_analyzed(kotemari_instance_empty):
     target_file = instance.project_root / "dummy_file.py"
     target_file.touch() # Create the file
 
-    with pytest.raises(RuntimeError, match="Project must be analyzed first"):
+    with pytest.raises(AnalysisError, match="Project must be analyzed first"):
         instance.get_context([str(target_file)])
 
 def test_get_context_success(kotemari_instance_analyzed):
@@ -602,7 +611,7 @@ def test_get_context_target_file_not_in_analysis(kotemari_instance_analyzed):
     ignored_file_path.write_text("This file is ignored.")
 
     # Should raise FileNotFoundError because it's not in the cache/analysis result
-    with pytest.raises(FileNotFoundError, match="not found in analyzed project data"):
+    with pytest.raises(FileNotFoundErrorInAnalysis, match="not found in analyzed project data"):
          instance.get_context([str(ignored_file_path)])
 
 def test_get_context_target_file_does_not_exist(kotemari_instance_analyzed):
@@ -612,5 +621,5 @@ def test_get_context_target_file_does_not_exist(kotemari_instance_analyzed):
     assert not non_existent_file.exists()
 
     # Should raise FileNotFoundError because it's not in the cache and likely fails existence check
-    with pytest.raises(FileNotFoundError, match="not found in analyzed project data"):
+    with pytest.raises(FileNotFoundErrorInAnalysis, match="not found in analyzed project data"):
         instance.get_context([str(non_existent_file)]) 

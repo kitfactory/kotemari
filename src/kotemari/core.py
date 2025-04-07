@@ -20,6 +20,13 @@ from .domain.context_data import ContextData
 from .gateway.file_system_accessor import FileSystemAccessor
 from .domain.file_content_formatter import BasicFileContentFormatter
 from .domain.cache_metadata import CacheMetadata
+from .domain.exceptions import (
+    KotemariError,
+    AnalysisError,
+    FileNotFoundErrorInAnalysis,
+    ContextGenerationError,
+    DependencyError
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +246,7 @@ class Kotemari:
                        ファイルパスのリスト。
 
         Raises:
-            RuntimeError: If the project has not been analyzed yet.
+            AnalysisError: If the project has not been analyzed yet.
                           プロジェクトがまだ分析されていない場合。
         """
         if self._analysis_results is None:
@@ -248,7 +255,7 @@ class Kotemari:
              # For now, require explicit analysis first.
              # 今のところ、最初に明示的な分析が必要です。
             # self.analyze_project()
-             raise RuntimeError("Project must be analyzed before listing files. Call analyze_project() first.")
+             raise AnalysisError("Project must be analyzed before listing files. Call analyze_project() first.")
              # logger.warning("Project not analyzed yet. Call analyze_project() first for complete results.")
              # return []
 
@@ -276,11 +283,11 @@ class Kotemari:
                  ファイルツリー文字列。
 
         Raises:
-            RuntimeError: If the project has not been analyzed yet.
+            AnalysisError: If the project has not been analyzed yet.
                           プロジェクトがまだ分析されていない場合。
         """
         if self._analysis_results is None:
-            raise RuntimeError("Project must be analyzed before generating tree. Call analyze_project() first.")
+            raise AnalysisError("Project must be analyzed before generating tree. Call analyze_project() first.")
 
         if not self._analysis_results:
             return "(Project is empty or all files were ignored)"
@@ -436,23 +443,26 @@ class Kotemari:
                                   見つからなかった、または依存関係がない場合は空のリストを返します。
 
         Raises:
-            RuntimeError: If the project has not been analyzed yet (`analyze_project` was not called).
+            AnalysisError: If the project has not been analyzed yet (`analyze_project` was not called).
                           プロジェクトがまだ分析されていない場合（`analyze_project` が呼び出されていない場合）。
         """
         if self._analysis_results is None:
-            raise RuntimeError("Project must be analyzed before getting dependencies. Call analyze_project() first.")
+            raise AnalysisError("Project must be analyzed before getting dependencies. Call analyze_project() first.")
 
         # Resolve the input path to an absolute path
         # 入力パスを絶対パスに解決します
         try:
             absolute_path = self._path_resolver.resolve_absolute(file_path, base_dir=self.project_root)
-        except FileNotFoundError:
-             logger.warning(f"Cannot resolve path for dependency lookup: {file_path}. It might not exist.")
-             return []
+        except FileNotFoundError as e:
+            # This happens if the input path itself doesn't exist on the filesystem
+            # これは、入力パス自体がファイルシステムに存在しない場合に発生します
+            logger.warning(f"Path {file_path} not found on filesystem.")
+            # Propagate as a specific KotemariError
+            # 特定の KotemariError として伝播させます
+            raise DependencyError(f"Path {file_path} not found on filesystem.") from e
         except Exception as e:
             logger.warning(f"Error resolving path {file_path} for dependency lookup: {e}")
             return []
-
 
         # Find the FileInfo object for the given path
         # 指定されたパスの FileInfo オブジェクトを検索します
@@ -466,10 +476,11 @@ class Kotemari:
             logger.debug(f"Found {len(target_file_info.dependencies)} dependencies for {absolute_path.name}.")
             return target_file_info.dependencies
         else:
-            # File might exist but was ignored or not part of the analysis scope
-            # ファイルは存在するかもしれませんが、無視されたか分析範囲に含まれていませんでした
-            logger.warning(f"File '{absolute_path}' not found in analysis results. Cannot retrieve dependencies.")
-            return []
+            # File was not found within the analyzed files (might exist but be ignored)
+            # 分析されたファイル内にファイルが見つかりませんでした（存在するが無視されている可能性があります）
+            raise FileNotFoundErrorInAnalysis(
+                f"File '{absolute_path.name}' not found in analysis results (it might be ignored or outside the project scope)."
+            )
 
     def get_context(self, target_paths: List[str]) -> str:
         """
@@ -486,12 +497,12 @@ class Kotemari:
                  生成されたコンテキスト文字列。
 
         Raises:
-            RuntimeError: If the project has not been analyzed yet.
+            AnalysisError: If the project has not been analyzed yet.
                           プロジェクトがまだ分析されていない場合。
-            FileNotFoundError: If any target file is not found within the analyzed project scope or file system.
-                               分析されたプロジェクトスコープまたはファイルシステム内でターゲットファイルが見つからない場合。
-            IOError: If there is an error reading file content.
-                     ファイル内容の読み取り中にエラーが発生した場合。
+            FileNotFoundErrorInAnalysis: If any target file is not found within the analyzed project scope.
+                                       分析されたプロジェクトスコープ内でターゲットファイルが見つからない場合。
+            ContextGenerationError: If there is an error during context generation (e.g., reading files).
+                                    コンテキスト生成中にエラーが発生した場合（例：ファイルの読み取り）。
         """
         self._ensure_analyzed()
 
@@ -504,10 +515,12 @@ class Kotemari:
         # This check prevents trying to build context for files outside the project or ignored files.
         # このチェックにより、プロジェクト外のファイルや無視されたファイルに対してコンテキストを構築しようとするのを防ぎます。
         for p in absolute_target_paths:
-            if str(p) not in self._cache_storage.get_all_file_paths():
-                 # Or check directly if file exists via file_accessor if preferred
-                 # または、必要に応じて file_accessor を介してファイルが存在するか直接確認します
-                raise FileNotFoundError(f"Target file {p} not found in analyzed project data.")
+            # Check against the in-memory analysis results
+            # メモリ内の分析結果に対してチェックします
+            if not any(fi.path == p for fi in self._analysis_results):
+                 raise FileNotFoundErrorInAnalysis(
+                     f"Target file {p.relative_to(self.project_root)} not found in analyzed project data (it might be ignored or outside the project scope)."
+                 )
 
         try:
             # English: Use the ContextBuilder use case
@@ -517,16 +530,20 @@ class Kotemari:
                 project_root=Path(self.project_root)
             )
             return context_data.context_string
-        except (FileNotFoundError, IOError) as e:
+        except FileNotFoundError as e: # Should theoretically not happen due to checks above
+            logger.error(f"Filesystem error during context generation (should have been caught earlier): {e}")
+            raise ContextGenerationError(f"File system error: {e}") from e
+        except IOError as e:
             logger.error(f"Error during context generation: {e}")
-            # Re-raise the specific error for the controller to handle
-            # コントローラーが処理できるように特定のエラーを再発生させます
-            raise e
-        except Exception as e:
+            raise ContextGenerationError(f"Error reading file content: {e}") from e
+        except KotemariError as e: # Catch other Kotemari specific errors from ContextBuilder
+            logger.error(f"Kotemari error during context generation: {e}")
+            raise # Re-raise KotemariError subclasses
+        except Exception as e: # Catch unexpected errors
             logger.exception(f"Unexpected error during context generation: {e}")
             # Raise a more generic error or handle differently
             # より一般的なエラーを発生させるか、異なる方法で処理します
-            raise RuntimeError(f"Failed to generate context: {e}") from e
+            raise ContextGenerationError(f"An unexpected error occurred: {e}") from e
 
     def _ensure_analyzed(self) -> None:
         """
@@ -534,12 +551,12 @@ class Kotemari:
         プロジェクト分析が実行されたことを確認します。
 
         Raises:
-            RuntimeError: If analysis has not been performed.
+            AnalysisError: If analysis has not been performed.
                           分析が実行されていない場合。
         """
         if not self.project_analyzed:
             logger.error("Project must be analyzed first. Call analyze_project() first.")
-            raise RuntimeError("Project must be analyzed first. Call analyze_project() first.")
+            raise AnalysisError("Project must be analyzed first. Call analyze_project() first.")
 
     def _resolve_path(self, path_str: str) -> Path:
         """

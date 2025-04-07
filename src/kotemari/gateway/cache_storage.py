@@ -6,6 +6,7 @@ from typing import Any, Tuple, Optional, List
 
 from ..domain.file_info import FileInfo # Assuming cache stores List[FileInfo]
 from ..domain.cache_metadata import CacheMetadata
+from ..domain.exceptions import CacheError # カスタム例外をインポート
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,14 @@ class CacheStorage:
                 self.cache_dir.mkdir(parents=False, exist_ok=True)
                 logger.info(f"Created cache directory: {self.cache_dir}")
             except OSError as e:
-                logger.error(f"Failed to create cache directory {self.cache_dir}: {e}")
+                # Wrap OSError in CacheError
+                # OSError を CacheError でラップします
+                logger.error(f"Failed to create cache directory {self.cache_dir}: {e}", exc_info=True)
                 # Re-raise or handle as appropriate? For now, log and continue.
                 # 適切に再発生または処理しますか？今のところ、ログに記録して続行します。
-                pass # Subsequent read/write attempts will likely fail
+                # Raise CacheError as this is fundamental for caching to work
+                # キャッシュが機能するための基本であるため、CacheError を発生させます
+                raise CacheError(f"Failed to create cache directory {self.cache_dir}: {e}") from e
 
     def load_cache(self) -> Optional[Tuple[List[FileInfo], CacheMetadata]]:
         """
@@ -65,7 +70,9 @@ class CacheStorage:
 
         try:
             with self.cache_file.open('rb') as f:
-                cached_data = pickle.load(f)
+                # Add type hint for clarity, though pickle can return anything
+                # pickle は何でも返すことができますが、明確にするために型ヒントを追加します
+                cached_data: Any = pickle.load(f)
             # Basic validation: Check if it's a tuple of expected types (list, CacheMetadata)
             # 基本的な検証: 期待される型（list、CacheMetadata）のタプルであるかを確認します
             if (
@@ -88,8 +95,10 @@ class CacheStorage:
             self.clear_cache() # Clear corrupted cache
             return None
         except Exception as e:
+            # Wrap unexpected errors in CacheError
+            # 予期しないエラーを CacheError でラップします
             logger.error(f"An unexpected error occurred loading cache from {self.cache_file}: {e}", exc_info=True)
-            return None
+            raise CacheError(f"Unexpected error loading cache file {self.cache_file}: {e}") from e
 
     def save_cache(self, analysis_results: List[FileInfo], metadata: CacheMetadata):
         """
@@ -114,8 +123,17 @@ class CacheStorage:
             # 古いキャッシュファイルを新しいファイルでアトミックに置き換えます
             os.replace(temp_file_path, self.cache_file)
             logger.info(f"Successfully saved cache to {self.cache_file}")
-        except (pickle.PicklingError, OSError, Exception) as e:
+        except (pickle.PicklingError, OSError) as e:
+            # Wrap specific save errors in CacheError
+            # 特定の保存エラーを CacheError でラップします
             logger.error(f"Failed to save cache to {self.cache_file}: {e}", exc_info=True)
+            raise CacheError(f"Failed to save cache file {self.cache_file}: {e}") from e
+        except Exception as e:
+            # Wrap unexpected errors in CacheError
+            # 予期しないエラーを CacheError でラップします
+            logger.error(f"Unexpected error saving cache to {self.cache_file}: {e}", exc_info=True)
+            raise CacheError(f"Unexpected error saving cache file {self.cache_file}: {e}") from e
+        finally:
             # Attempt to clean up temporary file if it exists
             # 存在する場合、一時ファイルのクリーンアップを試みます
             if temp_file_path.exists():
@@ -139,7 +157,7 @@ class CacheStorage:
                 logger.info(f"Cache file {self.cache_file} deleted.")
                 return True
             except OSError as e:
-                logger.error(f"Failed to delete cache file {self.cache_file}: {e}")
+                logger.warning(f"Failed to delete cache file {self.cache_file}: {e}")
                 return False
         else:
             logger.info("Cache file does not exist, nothing to clear.")
@@ -168,8 +186,16 @@ class CacheStorage:
                 else:
                     logger.warning(f"Cache file {self.cache_file} has unexpected format.")
                     return []
-            except Exception as e:
-                logger.error(f"Error loading cache in get_all_file_paths: {e}")
+            except (pickle.UnpicklingError, EOFError, TypeError, AttributeError, ValueError, ImportError) as e:
+                # Treat load errors similar to load_cache
+                # load_cache と同様に読み込みエラーを処理します
+                logger.warning(f"Failed to load cache in get_all_file_paths: {e}. Ignoring cache.")
+                self.clear_cache()
                 return []
+            except Exception as e: # Unexpected errors
+                logger.error(f"Error loading cache in get_all_file_paths: {e}")
+                # Optionally raise CacheError here?
+                # オプションでここで CacheError を発生させますか？
+                raise CacheError(f"Unexpected error loading cache file {self.cache_file}: {e}") from e
         else:
             return [] 

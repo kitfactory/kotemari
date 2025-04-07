@@ -228,7 +228,9 @@ class CliController:
                 self.console.print("No files found to build tree (after applying ignore rules).")
                 return
 
-            tree = Tree(f":open_file_folder: [link file://{self.project_root}]{self.project_root.name}")
+            # Remove icon from root label
+            # ルートラベルからアイコンを削除
+            tree = Tree(f"[link file://{self.project_root}]{self.project_root.name}")
 
             # Build a directory structure from the file paths
             # ファイルパスからディレクトリ構造を構築します
@@ -254,9 +256,13 @@ class CliController:
                     is_last = i == len(items) - 1
                     style = "" if is_last else "dim"
                     if content is None: # File
-                        branch.add(f":page_facing_up: {name}", style=style)
+                        # Remove icon from file node
+                        # ファイルノードからアイコンを削除
+                        branch.add(f"{name}", style=style)
                     else: # Directory
-                        new_branch = branch.add(f":folder: {name}", style=style)
+                        # Remove icon from directory node
+                        # ディレクトリノードからアイコンを削除
+                        new_branch = branch.add(f"{name}", style=style)
                         add_nodes(new_branch, content)
 
             add_nodes(tree, structure)

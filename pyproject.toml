@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kotemari"
+version = "0.0.1"
+authors = [
+  { name="Your Name", email="you@example.com" }, # TODO: 作者情報を更新してください
+]
+description = "A library to analyze project structure and generate context for LLMs." # TODO: 説明をより詳細に記述してください
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # TODO: ライセンスを決定してください
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    # ここに実行時依存ライブラリを追加します
+    "pyyaml>=6.0",
+    "pathspec>=0.12",
+    "watchdog>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.10.0",
+    "uv>=0.1.0", # uv 自体も開発依存に追加しておくと便利です
+]
+
+[project.urls]
+"Homepage" = "https://github.com/your-username/kotemari" # TODO: プロジェクトのURLを更新してください
+"Bug Tracker" = "https://github.com/your-username/kotemari/issues" # TODO: IssueトラッカーのURLを更新してください
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["src"]
+norecursedirs = ["tests/dummy_python_proj", ".venv", ".git", "dist", "build"]
+addopts = [
+    "--import-mode=importlib",
+    "--cov=src/kotemari", # カバレッジ計測対象を src/kotemari に設定
+    "--cov-report=term-missing",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kotemari"]
+
+[dependency-groups]
+dev = [
+    "pytest-mock>=3.14.0",
+]

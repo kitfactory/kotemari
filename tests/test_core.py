@@ -517,4 +517,78 @@ def test_get_context_target_file_does_not_exist(mock_read_file, kotemari_instanc
 
     # Expect FileNotFoundErrorInAnalysis as the file cannot be found or resolved.
     with pytest.raises(FileNotFoundErrorInAnalysis, match="was not found in the project analysis results"):
-        instance.get_context([str(non_existent_file)]) 
+        instance.get_context([str(non_existent_file)])
+
+# --- Test Cache Persistence (Step 11-1-7) ---
+
+@patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
+def test_analysis_cache_save_load(mock_analyze, setup_facade_test_project):
+    """
+    Tests that analysis results are saved to cache and loaded on subsequent initializations.
+    分析結果がキャッシュに保存され、後続の初期化時に読み込まれることをテストします。
+    """
+    project_root = setup_facade_test_project
+    cache_dir = project_root / ".kotemari"
+    cache_file = cache_dir / "analysis_cache.pkl"
+
+    # Mock analysis results for the first run
+    # 最初の実行のためのモック分析結果
+    mock_results1 = [
+        FileInfo(path=project_root / "file1.txt", mtime=datetime.datetime.now(), size=10, hash="h1"),
+        FileInfo(path=project_root / "file2.txt", mtime=datetime.datetime.now(), size=20, hash="h2"),
+    ]
+    mock_analyze.return_value = mock_results1
+
+    # 1. First initialization: should analyze and save to cache
+    # 1. 最初の初期化: 分析してキャッシュに保存するはず
+    logger.info("--- Cache Test: First Initialization ---")
+    kotemari1 = Kotemari(project_root)
+    mock_analyze.assert_called_once() # Analyze should be called
+    assert kotemari1.project_analyzed is True
+    assert kotemari1._analysis_results == mock_results1
+    assert cache_file.exists(), "Cache file should have been created"
+
+    # 2. Second initialization: should load from cache, not analyze
+    # 2. 2回目の初期化: キャッシュから読み込み、分析しないはず
+    logger.info("--- Cache Test: Second Initialization (Load from Cache) ---")
+    mock_analyze.reset_mock() # Reset mock to check if it gets called again
+    kotemari2 = Kotemari(project_root)
+    mock_analyze.assert_not_called() # Analyze should NOT be called
+    assert kotemari2.project_analyzed is True
+    assert len(kotemari2._analysis_results) == len(mock_results1)
+    # Simple check: compare number of items and maybe first item's path
+    # 簡単なチェック: アイテム数と比較し、最初のアイテムのパスを比較する
+    assert kotemari2._analysis_results[0].path == mock_results1[0].path
+    logger.info("Cache load test passed.")
+
+@patch('kotemari.usecase.project_analyzer.ProjectAnalyzer.analyze')
+def test_analysis_cache_invalid_ignored(mock_analyze, setup_facade_test_project):
+    """
+    Tests that an invalid cache file is ignored and analysis is performed.
+    無効なキャッシュファイルが無視され、分析が実行されることをテストします。
+    """
+    project_root = setup_facade_test_project
+    cache_dir = project_root / ".kotemari"
+    cache_file = cache_dir / "analysis_cache.pkl"
+
+    # Create an invalid cache file (e.g., empty or corrupted)
+    # 無効なキャッシュファイルを作成します（例：空または破損）
+    cache_dir.mkdir(exist_ok=True)
+    cache_file.write_text("invalid data")
+
+    # Mock analysis results for when analysis *is* performed
+    # 分析が*実行*された場合のモック分析結果
+    mock_results_fallback = [
+        FileInfo(path=project_root / "fallback.txt", mtime=datetime.datetime.now(), size=5, hash="h_fallback"),
+    ]
+    mock_analyze.return_value = mock_results_fallback
+
+    # Initialize Kotemari: should ignore invalid cache and run analysis
+    # Kotemari を初期化: 無効なキャッシュを無視して分析を実行するはず
+    logger.info("--- Cache Test: Initialization with Invalid Cache ---")
+    kotemari = Kotemari(project_root)
+
+    mock_analyze.assert_called_once() # Analyze should be called
+    assert kotemari.project_analyzed is True
+    assert kotemari._analysis_results == mock_results_fallback # Results should be from analysis
+    logger.info("Invalid cache ignore test passed.") 

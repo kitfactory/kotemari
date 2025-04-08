@@ -1,9 +1,10 @@
 from pathlib import Path
 import os
 import datetime
-from typing import Iterator, List, Callable # Iterator, List, Callable をインポート
+from typing import Iterator, List, Callable, Union, Optional, Any # Iterator, List, Callable, Union, Optional, Any をインポート
 import sys
 import logging
+import pickle
 
 from ..domain.file_info import FileInfo
 from ..utility.path_resolver import PathResolver
@@ -142,4 +143,66 @@ class FileSystemAccessor:
                   パスが存在する場合は True、それ以外の場合は False。
         """
         abs_path = self.path_resolver.resolve_absolute(file_path)
-        return abs_path.exists() 
+        return abs_path.exists()
+
+    def write_pickle(self, obj: Any, file_path: Union[Path, str], project_root: Path) -> None:
+        """
+        Serializes an object using pickle and writes it to a file.
+        オブジェクトを pickle を使用してシリアライズし、ファイルに書き込みます。
+
+        Args:
+            obj: The object to serialize.
+                 シリアライズするオブジェクト。
+            file_path (Union[Path, str]): The path to the output file, relative to the project root.
+                                          プロジェクトルートからの相対パスとしての出力ファイルへのパス。
+            project_root (Path): The absolute path to the project root.
+                                プロジェクトルートへの絶対パス。
+        Raises:
+            IOError: If there is an error writing the file.
+                     ファイルの書き込み中にエラーが発生した場合。
+        """
+        absolute_path = project_root / file_path
+        try:
+            # Ensure the directory exists
+            # ディレクトリが存在することを確認します
+            absolute_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(absolute_path, 'wb') as f:
+                pickle.dump(obj, f)
+            logger.debug(f"Successfully pickled object to {absolute_path}")
+        except (IOError, pickle.PicklingError) as e:
+            logger.error(f"Error writing pickle file {absolute_path}: {e}")
+            raise IOError(f"Failed to write cache file: {e}") from e
+
+    def read_pickle(self, file_path: Union[Path, str], project_root: Path) -> Optional[Any]:
+        """
+        Reads and deserializes an object from a pickle file.
+        pickle ファイルからオブジェクトを読み取り、デシリアライズします。
+
+        Args:
+            file_path (Union[Path, str]): The path to the pickle file, relative to the project root.
+                                          プロジェクトルートからの相対パスとしての pickle ファイルへのパス。
+            project_root (Path): The absolute path to the project root.
+                                プロジェクトルートへの絶対パス。
+
+        Returns:
+            The deserialized object, or None if the file does not exist or cannot be read/deserialized.
+            デシリアライズされたオブジェクト。ファイルが存在しないか、読み取り/デシリアライズできない場合は None。
+        """
+        absolute_path = project_root / file_path
+        if not self.exists(absolute_path):
+            logger.debug(f"Pickle file not found: {absolute_path}")
+            return None
+        try:
+            with open(absolute_path, 'rb') as f:
+                obj = pickle.load(f)
+            logger.debug(f"Successfully unpickled object from {absolute_path}")
+            return obj
+        except (IOError, pickle.UnpicklingError, EOFError, ValueError, TypeError) as e:
+            logger.warning(f"Error reading or unpickling file {absolute_path}: {e}. Cache will be ignored.")
+            # Optionally delete the corrupted cache file?
+            # 破損したキャッシュファイルをオプションで削除しますか？
+            # try:
+            #     absolute_path.unlink()
+            # except OSError:
+            #     pass
+            return None 

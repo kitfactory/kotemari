@@ -129,9 +129,21 @@ class Kotemari:
             formatter=self._formatter
         )
 
-        # --- Perform initial analysis (Step 11-1-2 cont.) ---
-        logger.info("Performing initial project analysis...")
-        self._run_analysis_and_update_memory() # Perform initial full analysis
+        self.cache_file_path = Path(".kotemari") / "analysis_cache.pkl"
+
+        # --- Try loading from cache first (Step 11-1-7) ---
+        logger.info("Attempting to load analysis results from cache...")
+        cached_data = self._file_accessor.read_pickle(self.cache_file_path, self.project_root)
+        if cached_data is not None and isinstance(cached_data, list): # Basic validation
+             # TODO: Add more robust cache validation (e.g., based on config changes, schema version)
+             logger.info(f"Successfully loaded {len(cached_data)} items from cache: {self.project_root / self.cache_file_path}")
+             with self._analysis_lock:
+                 self._analysis_results = cached_data
+                 self.project_analyzed = True
+        else:
+             logger.info("Cache not found or invalid. Performing initial project analysis...")
+             # --- Perform initial analysis (Step 11-1-2 cont.) ---
+             self._run_analysis_and_update_memory() # Perform initial full analysis
 
     @property
     def project_root(self) -> Path:
@@ -150,6 +162,13 @@ class Kotemari:
                 self._analysis_results = self.analyzer.analyze()
                 self.project_analyzed = True
                 logger.info(f"Initial analysis complete. Found {len(self._analysis_results)} files.")
+                # --- Save results to cache (Step 11-1-7) ---
+                if self._analysis_results is not None:
+                    try:
+                        self._file_accessor.write_pickle(self._analysis_results, self.cache_file_path, self.project_root)
+                        logger.info(f"Analysis results saved to cache: {self.project_root / self.cache_file_path}")
+                    except IOError as e:
+                        logger.warning(f"Failed to save analysis results to cache: {e}")
             except Exception as e:
                 logger.error(f"Initial project analysis failed: {e}", exc_info=True)
                 self._analysis_results = None # Ensure cache is cleared on error

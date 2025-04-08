@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, ANY
 
 from kotemari.core import Kotemari
-from kotemari.domain.file_system_event import FileSystemEvent
+from kotemari.domain.file_system_event import FileSystemEvent, FileSystemEventType
 from kotemari.service.file_system_event_monitor import FileSystemEventMonitor, FileSystemEventCallback
-from kotemari.usecase.cache_updater import CacheUpdater
+from kotemari.domain.exceptions import AnalysisError
 
 # Use a real path for the test project root
 # テストプロジェクトルートには実際のパスを使用します
@@ -21,120 +21,110 @@ def test_project_path(tmp_path: Path) -> Path:
 def kotemari_instance(test_project_path: Path) -> Kotemari:
     """Fixture to provide a Kotemari instance for testing watching."""
     # """監視テスト用の Kotemari インスタンスを提供するフィクスチャ。"""
-    # Enable cache for watching tests
-    # 監視テストのためにキャッシュを有効にします
-    return Kotemari(project_root=test_project_path, use_cache=True)
+    return Kotemari(project_root=test_project_path)
 
 # --- Test Cases --- #
 
-@patch("kotemari.core.FileSystemEventMonitor") # Patch the class in the core module
+@patch("kotemari.core.FileSystemEventMonitor")
 def test_start_watching_initializes_and_starts_monitor(MockMonitor, kotemari_instance: Kotemari):
-    """Test that start_watching initializes and starts the monitor."""
-    # """start_watching がモニターを初期化して開始することをテストします。"""
+    """Test that start_watching initializes and starts the monitor correctly."""
+    # This test now implicitly uses the Kotemari instance created by the fixture
+    # It assumes the fixture correctly initializes Kotemari without use_cache
     mock_monitor_instance = MockMonitor.return_value
-    mock_monitor_instance.is_alive.return_value = False
 
     kotemari_instance.start_watching()
 
-    # Check that monitor was initialized with project root and ignore processor
-    # モニターがプロジェクトルートと無視プロセッサで初期化されたことを確認します
-    MockMonitor.assert_called_once_with(kotemari_instance.project_root, kotemari_instance._ignore_processor)
-    # Check that start was called on the instance with a callback
-    # インスタンスで start がコールバック付きで呼び出されたことを確認します
-    mock_monitor_instance.start.assert_called_once_with(callback=ANY) # ANY checks for any function/method
+    MockMonitor.assert_called_once_with(
+        kotemari_instance.project_root,
+        ANY, # internal_event_handler
+        ignore_func=ANY # ignore_func from ignore_processor
+    )
+    mock_monitor_instance.start.assert_called_once()
+    assert kotemari_instance._event_monitor is mock_monitor_instance
+    assert kotemari_instance._background_worker_thread.is_alive() # Check worker thread started
+
+    # Clean up
+    kotemari_instance.stop_watching()
 
 @patch("kotemari.core.FileSystemEventMonitor")
-def test_start_watching_already_running(MockMonitor, kotemari_instance: Kotemari):
-    """Test that start_watching does nothing if already running."""
-    # """既に実行中の場合、start_watching が何もしないことをテストします。"""
+def test_start_watching_already_running(MockMonitor, kotemari_instance: Kotemari, caplog):
+    """Test that calling start_watching again when already running logs a warning."""
     mock_monitor_instance = MockMonitor.return_value
-    mock_monitor_instance.is_alive.return_value = True # Simulate running
+    mock_monitor_instance.is_alive.return_value = True
 
-    # Initialize the internal monitor reference first
-    # 最初に内部モニター参照を初期化します
-    kotemari_instance._event_monitor = mock_monitor_instance
+    kotemari_instance.start_watching() # First call
+    mock_monitor_instance.start.assert_called_once() # Should be called once
+    kotemari_instance.start_watching() # Second call
 
-    kotemari_instance.start_watching()
+    mock_monitor_instance.start.assert_called_once() # Should still be called only once
+    assert "File system monitor is already running." in caplog.text
 
-    # Monitor should not be initialized again, start should not be called again
-    # モニターは再初期化されず、start は再呼び出しされません
-    mock_monitor_instance.start.assert_not_called()
+    # Clean up
+    mock_monitor_instance.is_alive.return_value = False # Allow stop
+    kotemari_instance.stop_watching()
 
 @patch("kotemari.core.FileSystemEventMonitor")
 def test_stop_watching_stops_monitor(MockMonitor, kotemari_instance: Kotemari):
-    """Test that stop_watching stops the monitor if it's alive."""
-    # """生存している場合、stop_watching がモニターを停止することをテストします。"""
+    """Test that stop_watching stops the monitor and worker thread."""
     mock_monitor_instance = MockMonitor.return_value
     mock_monitor_instance.is_alive.return_value = True
-    kotemari_instance._event_monitor = mock_monitor_instance # Set the internal reference
 
-    kotemari_instance.stop_watching()
+    kotemari_instance.start_watching()
+
+    # Mock the worker thread join for faster test
+    with patch.object(kotemari_instance._background_worker_thread, 'join') as mock_join:
+        kotemari_instance.stop_watching()
 
     mock_monitor_instance.stop.assert_called_once()
+    mock_monitor_instance.join.assert_called_once()
+    assert kotemari_instance._stop_worker_event.is_set()
+    mock_join.assert_called_once()
+    assert kotemari_instance._event_monitor is None
+    assert kotemari_instance._background_worker_thread is None
 
 @patch("kotemari.core.FileSystemEventMonitor")
-def test_stop_watching_not_running(MockMonitor, kotemari_instance: Kotemari):
-    """Test that stop_watching does nothing if monitor is not alive."""
-    # """モニターが生存していない場合、stop_watching が何もしないことをテストします。"""
+def test_stop_watching_not_running(MockMonitor, kotemari_instance: Kotemari, caplog):
+    """Test that stop_watching logs a warning if the monitor is not running."""
     mock_monitor_instance = MockMonitor.return_value
-    mock_monitor_instance.is_alive.return_value = False
-    kotemari_instance._event_monitor = mock_monitor_instance
+    mock_monitor_instance.is_alive.return_value = False # Simulate not running
 
     kotemari_instance.stop_watching()
 
     mock_monitor_instance.stop.assert_not_called()
+    assert "File system monitor is not running." in caplog.text
 
+@patch("kotemari.core.Kotemari._run_analysis_and_update_memory") # Mock the analysis function
 @patch("kotemari.core.FileSystemEventMonitor")
-@patch("kotemari.core.CacheUpdater") # Also mock CacheUpdater
-def test_event_triggers_cache_invalidation_and_callback(MockUpdater, MockMonitor, kotemari_instance: Kotemari, test_project_path):
-    """Test that a file event triggers cache invalidation and user callback."""
-    # """ファイルイベントがキャッシュ無効化とユーザーコールバックをトリガーすることをテストします。"""
+def test_event_triggers_cache_invalidation_and_callback(MockMonitor, mock_run_analysis, kotemari_instance: Kotemari, test_project_path):
+    """Test that a file system event triggers cache invalidation (via re-analysis) and user callback."""
     mock_monitor_instance = MockMonitor.return_value
-    mock_updater_instance = MockUpdater.return_value
-    kotemari_instance._cache_updater = mock_updater_instance # Inject mock updater
+    user_callback = MagicMock()
 
-    # Mock the monitor's start to capture the internal callback
-    # 内部コールバックをキャプチャするためにモニターの start をモックします
-    internal_callback: Optional[FileSystemEventCallback] = None
-    def capture_callback(*args, **kwargs):
-        nonlocal internal_callback
-        internal_callback = kwargs.get('callback')
-    mock_monitor_instance.start.side_effect = capture_callback
+    # Capture the internal event handler passed to the monitor
+    internal_event_handler = None
+    def capture_handler(*args, **kwargs):
+        nonlocal internal_event_handler
+        # The handler is the second argument (index 1)
+        internal_event_handler = args[1]
+        return mock_monitor_instance
 
-    mock_user_callback = MagicMock()
-    kotemari_instance.start_watching(user_callback=mock_user_callback)
+    MockMonitor.side_effect = capture_handler
 
-    # Ensure the callback was captured
-    # コールバックがキャプチャされたことを確認します
-    assert internal_callback is not None
+    kotemari_instance.start_watching(user_callback=user_callback)
 
-    # Simulate an event being triggered by the monitor
-    # モニターによってトリガーされたイベントをシミュレートします
-    test_event = FileSystemEvent(
-        event_type="modified",
-        src_path=test_project_path / "file1.txt",
-        is_directory=False
-    )
-    internal_callback(test_event) # Manually call the captured callback
+    assert internal_event_handler is not None
 
-    # Check that CacheUpdater.invalidate_cache_on_event was called
-    # CacheUpdater.invalidate_cache_on_event が呼び出されたことを確認します
-    mock_updater_instance.invalidate_cache_on_event.assert_called_once_with(test_event)
+    # Simulate an event
+    # Use dictionary access for Enum member based on the AttributeError observed
+    test_event = FileSystemEvent(event_type="modified", src_path=test_project_path / "some_file.py", is_directory=False)
+    internal_event_handler(test_event)
 
-    # Check that the user callback was called
-    # ユーザーコールバックが呼び出されたことを確認します
-    mock_user_callback.assert_called_once_with(test_event)
+    # Wait briefly for the background worker to process the event
+    time.sleep(1.5) # Adjust if needed
 
-@patch("kotemari.core.FileSystemEventMonitor")
-def test_start_watching_cache_disabled(MockMonitor, test_project_path):
-    """Test that watching cannot be started if cache is disabled."""
-    # """キャッシュが無効な場合、監視を開始できないことをテストします。"""
-    kotemari_no_cache = Kotemari(project_root=test_project_path, use_cache=False)
-    mock_monitor_instance = MockMonitor.return_value
+    # Assertions
+    user_callback.assert_called_once_with(test_event)
+    mock_run_analysis.assert_called() # Check if re-analysis was triggered
 
-    kotemari_no_cache.start_watching()
-
-    # Monitor should not be initialized or started
-    # モニターは初期化または開始されません
-    MockMonitor.assert_not_called()
-    mock_monitor_instance.start.assert_not_called() 
+    # Clean up
+    kotemari_instance.stop_watching() 

@@ -7,9 +7,100 @@ logger = logging.getLogger(__name__)
 
 class GitignoreReader:
     """
-    Reads .gitignore files and creates a pathspec object for matching paths.
-    .gitignore ファイルを読み込み、パスを照合するための pathspec オブジェクトを作成します。
+    Utility class to find and read .gitignore files in a project hierarchy.
+    プロジェクト階層内の .gitignore ファイルを見つけて読み取るためのユーティリティクラス。
     """
+
+    def __init__(self, project_root: Path):
+        """
+        Initializes the reader with the project root.
+        プロジェクトルートでリーダーを初期化します。
+
+        Args:
+            project_root: The root directory of the project.
+        """
+        self.project_root = project_root.resolve()
+
+    def find_gitignore_files(self) -> List[Path]:
+        """
+        Finds all .gitignore files starting from the project root up to its parent,
+        and also includes .git/info/exclude if it exists.
+        プロジェクトルートから親に向かってすべての .gitignore ファイルを検索し、
+        .git/info/exclude が存在すればそれも含めます。
+
+        Returns:
+            List[Path]: A list of absolute paths to the found .gitignore files,
+                      sorted for consistency.
+                      見つかった .gitignore ファイルへの絶対パスのリスト（一貫性のためにソート済み）。
+        """
+        gitignore_files: List[Path] = []
+        current_dir = self.project_root
+
+        # Traverse upwards from project_root to find .gitignore files
+        # project_root から上に向かって .gitignore ファイルを検索します
+        while True:
+            gitignore_path = current_dir / ".gitignore"
+            if gitignore_path.is_file():
+                gitignore_files.append(gitignore_path)
+                logger.debug(f"Found .gitignore: {gitignore_path}")
+
+            # Stop condition: Check if current_dir is the root or has no parent we should check
+            # 停止条件: current_dir がルートであるか、チェックすべき親がないかを確認します
+            if current_dir == self.project_root.anchor or current_dir.parent == current_dir:
+                 break
+
+            # Move to parent directory
+            # 親ディレクトリに移動します
+            current_dir = current_dir.parent
+            # Avoid issues if project_root itself is the filesystem root or drive root
+            if current_dir == self.project_root.parent and current_dir == current_dir.parent:
+                 # This condition might be complex depending on OS and root definition
+                 # この条件はOSやルート定義によって複雑になる可能性があります
+                 pass # Allow one more check at parent if needed, loop condition handles termination
+
+
+        # Read .git/info/exclude if exists
+        git_info_exclude = self.project_root / ".git" / "info" / "exclude"
+        if git_info_exclude.is_file():
+            gitignore_files.append(git_info_exclude)
+            logger.debug(f"Found .git/info/exclude: {git_info_exclude}")
+
+        logger.info(f"Found {len(gitignore_files)} .gitignore files to consider.")
+        return sorted(gitignore_files) # Return sorted list for consistency
+
+
+    @staticmethod
+    def read_gitignore_patterns(gitignore_path: Path) -> List[str]:
+        """
+        Reads patterns from a single .gitignore file, handling comments and empty lines.
+        単一の .gitignore ファイルからパターンを読み取り、コメントと空行を処理します。
+
+        Args:
+            gitignore_path (Path): The path to the .gitignore file.
+                                   .gitignore ファイルへのパス。
+
+        Returns:
+            List[str]: A list of non-empty, non-comment lines (patterns).
+                       空でなくコメントでもない行（パターン）のリスト。
+        """
+        patterns: List[str] = []
+        if not gitignore_path.is_file():
+            logger.warning(f"Attempted to read non-existent gitignore file: {gitignore_path}")
+            return patterns
+
+        try:
+            with gitignore_path.open('r', encoding='utf-8') as f:
+                for line in f:
+                    stripped_line = line.strip()
+                    if stripped_line and not stripped_line.startswith('#'):
+                        patterns.append(stripped_line)
+            logger.debug(f"Read {len(patterns)} patterns from {gitignore_path}")
+        except IOError as e:
+            logger.error(f"Error reading gitignore file {gitignore_path}: {e}")
+        except UnicodeDecodeError as e:
+             logger.error(f"Encoding error reading gitignore file {gitignore_path}: {e}")
+
+        return patterns
 
     @staticmethod
     def read(gitignore_path: Path) -> Optional[pathspec.PathSpec]:
@@ -90,4 +181,12 @@ class GitignoreReader:
         # The specs list is ordered from deepest to shallowest .gitignore
         # specs リストは、最も深い .gitignore から最も浅いものへと順序付けられています
         logger.debug(f"Found {len(specs)} .gitignore files starting from {start_dir}")
-        return specs 
+        return specs
+
+    def find_gitignore_files(self) -> List[Path]:
+        # Implementation of the instance method
+        pass
+
+    def find_gitignore_files(self) -> List[Path]:
+        # Implementation of the instance method
+        pass 

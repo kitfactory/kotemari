@@ -66,6 +66,8 @@ class ContextBuilder:
             IOError: If there is an error reading any of the files.
                      ファイルの読み取り中にエラーが発生した場合。
         """
+        logger.debug(f"ContextBuilder.build_context called with target_files: {target_files}") # DEBUG LOGGING ADDED
+
         # English: Validate that all target files exist first.
         # 日本語: まず、すべてのターゲットファイルが存在することを確認します。
         # This check is now primarily handled in Kotemari.get_context using FileNotFoundErrorInAnalysis
@@ -107,6 +109,10 @@ class ContextBuilder:
         except Exception as e: # Catch any other unexpected errors during file reading
             logger.exception(f"Unexpected error reading files for context: {e}")
             raise ContextGenerationError(f"Unexpected error during file reading: {e}") from e
+
+        # logger.debug(f\"ContextBuilder: file_contents before formatting: {list(file_contents.keys())}\") # DEBUG LOGGING REMOVED
+        # print(f"DEBUG ContextBuilder: file_contents keys = {list(file_contents.keys())}") # TEMP DEBUG PRINT REMOVED
+        # print(f"DEBUG ContextBuilder: file_contents values = {list(file_contents.values())}") # TEMP DEBUG PRINT REMOVED
 
         # English: Format the collected content.
         # 日本語: 収集したコンテンツをフォーマットします。

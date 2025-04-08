@@ -58,13 +58,10 @@ class CliController:
         """Gets or initializes the Kotemari instance."""
         if self._kotemari_instance is None:
             try:
-                logger.debug(f"Initializing Kotemari for project: {self.project_root}, config: {self.config_path}, use_cache: {self.use_cache}")
-                # Pass the stored use_cache preference to Kotemari constructor
-                # 保存された use_cache 設定を Kotemari コンストラクタに渡します
+                logger.debug(f"Initializing Kotemari for project: {self.project_root}, config: {self.config_path}")
                 self._kotemari_instance = Kotemari(
                     project_root=self.project_root, 
-                    config_path=self.config_path,
-                    use_cache=self.use_cache # Pass the flag here
+                    config_path=self.config_path
                 )
                 logger.debug("Kotemari instance initialized successfully.")
             except Exception as e:
@@ -172,14 +169,15 @@ class CliController:
         try:
             # Ensure analysis is done
             instance.analyze_project()
-            context_string = instance.get_context(target_file_paths)
-            
+            context_data = instance.get_context(target_file_paths)
+
             # Use rich.Syntax for potential highlighting (detect language if possible)
             # 潜在的なハイライトのために rich.Syntax を使用します（可能であれば言語を検出）
             # Simple print for now
             # 今はシンプルな print
             # self.console.print(Panel(context_string, title="Generated Context", border_style="blue"))
-            self.console.print(context_string) # Direct print as per current formatter output
+            # self.console.print(context_string) # Old: Direct print
+            self.console.print(context_data.context_string) # Corrected: print the string attribute
 
         except FileNotFoundErrorInAnalysis as e:
             console.print(f"[bold red]Error generating context:[/bold red] {e}")
@@ -223,13 +221,13 @@ class CliController:
         プロジェクトを解析し、ファイルツリー（無視ルール適用後）を表示します。
         """
         try:
-            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project() # Ensure analysis is done
+            # Ensure analysis is done
+            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project()
             if not analyzed_files:
                 self.console.print("No files found to build tree (after applying ignore rules).")
                 return
 
             # Remove icon from root label
-            # ルートラベルからアイコンを削除
             tree = Tree(f"[link file://{self.project_root}]{self.project_root.name}")
 
             # Build a directory structure from the file paths

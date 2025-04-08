@@ -488,27 +488,129 @@ class Kotemari:
         def background_worker():
             logger.info("Background analysis worker started.")
             while not self._stop_worker_event.is_set():
+                event: Optional[FileSystemEvent] = None # Initialize event
                 try:
                     # Wait for an event with a timeout to allow checking the stop signal
-                    event: FileSystemEvent = self._event_queue.get(timeout=1.0)
+                    # タイムアウト付きでイベントを待機し、停止シグナルを確認できるようにします
+                    event = self._event_queue.get(timeout=1.0)
+
+                    if event is None: # Sentinel value to stop the worker
+                        logger.debug("[Worker] Received stop signal (sentinel).")
+                        break
+
                     logger.info(f"[Worker] Processing event: {event}")
 
-                    # --- Simple Invalidation (Phase 1 of Step 11-1-6) --- #
-                    # For now, any event triggers a full re-analysis.
-                    # Later, this will be replaced with differential analysis.
-                    logger.info("Triggering full re-analysis due to detected event...")
-                    self._run_analysis_and_update_memory()
-                    logger.info("Background re-analysis complete.")
+                    # Resolve path and check if ignored BEFORE checking event type
+                    # イベントタイプを確認する前にパスを解決し、無視されるかどうかを確認します
+                    absolute_path = Path(event.src_path).resolve()
+                    if self._ignore_processor.is_ignored(absolute_path):
+                        logger.debug(f"[Worker] Ignoring event for path: {absolute_path}")
+                        self._event_queue.task_done()
+                        continue # Skip ignored paths
+
+                    # --- Differential Update Logic (Step 11-2-1) ---
+                    event_processed_differentially = False
+                    if not event.is_directory: # Only process file events differentially for now
+                        # Ensure thread-safe access to analysis results
+                        # 分析結果へのスレッドセーフなアクセスを保証します
+                        with self._analysis_lock:
+                            if event.event_type == EVENT_TYPE_CREATED:
+                                try:
+                                    logger.info(f"[Worker] Analyzing created file: {absolute_path}")
+                                    # Analyze the single created file
+                                    # 作成された単一ファイルを分析します
+                                    new_file_info_list = self.analyzer.analyze([absolute_path]) # Analyze only the new file
+                                    if new_file_info_list:
+                                        new_file_info = new_file_info_list[0]
+                                        # Update the in-memory cache
+                                        # メモリ内キャッシュを更新します
+                                        # Remove existing entry if any (e.g., if created shortly after deletion)
+                                        # 既存のエントリがあれば削除します（例：削除直後に作成された場合）
+                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
+                                        self._analysis_results.append(new_file_info)
+                                        logger.info(f"[Worker] Added/Updated analysis for {absolute_path} in memory cache.")
+                                        self.project_analyzed = True # Mark as analyzed if not already
+                                    else:
+                                         logger.warning(f"[Worker] Analysis of created file {absolute_path} returned no info (possibly empty or fully ignored content).")
+                                    event_processed_differentially = True
+                                except Exception as e:
+                                    logger.error(f"[Worker] Error analyzing created file {absolute_path}: {e}", exc_info=True)
+                                    # Fallback handled below
+
+                            elif event.event_type == EVENT_TYPE_DELETED:
+                                logger.info(f"[Worker] Removing deleted file from cache: {absolute_path}")
+                                initial_count = len(self._analysis_results)
+                                # Remove the FileInfo corresponding to the deleted file path
+                                # 削除されたファイルパスに対応する FileInfo を削除します
+                                self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
+                                final_count = len(self._analysis_results)
+                                if final_count < initial_count:
+                                    logger.info(f"[Worker] Removed analysis for {absolute_path} from memory cache.")
+                                else:
+                                    logger.warning(f"[Worker] Deleted file {absolute_path} was not found in memory cache.")
+                                event_processed_differentially = True
+                                # No need to trigger full analysis if file wasn't tracked
+                                # ファイルが追跡されていなかった場合、完全な分析をトリガーする必要はありません
+
+                            elif event.event_type == EVENT_TYPE_MODIFIED: # (Step 11-2-2)
+                                try:
+                                    logger.info(f"[Worker] Re-analyzing modified file: {absolute_path}")
+                                    # Re-analyze the single modified file
+                                    # 変更された単一ファイルを再分析します
+                                    modified_file_info_list = self.analyzer.analyze([absolute_path])
+                                    if modified_file_info_list:
+                                        modified_file_info = modified_file_info_list[0]
+                                        # Update the in-memory cache by replacing the old entry
+                                        # 古いエントリを置き換えてメモリ内キャッシュを更新します
+                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
+                                        self._analysis_results.append(modified_file_info)
+                                        logger.info(f"[Worker] Updated analysis for {absolute_path} in memory cache.")
+                                    else:
+                                        # If analysis returns nothing (e.g., file became empty or fully ignored), remove it
+                                        # 分析が何も返さない場合（例：ファイルが空になったか完全に無視されるようになった）、削除します
+                                        logger.warning(f"[Worker] Re-analysis of {absolute_path} returned no info. Removing from cache.")
+                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
+                                    event_processed_differentially = True
+                                except Exception as e:
+                                     logger.error(f"[Worker] Error re-analyzing modified file {absolute_path}: {e}", exc_info=True)
+                                     # Fallback handled below
+
+                    # --- Fallback to Full Re-analysis ---
+                    # If the event wasn't handled differentially (e.g., MOVED, directory event, or error during diff update)
+                    # イベントが差分的に処理されなかった場合（例：移動、ディレクトリイベント、差分更新中のエラー）
+                    if not event_processed_differentially:
+                        # Log the specific event type that triggers the fallback
+                        # フォールバックをトリガーする特定のイベントタイプをログに記録します
+                        trigger_reason = f"event type '{event.event_type}'" if hasattr(event, 'event_type') else "unknown event or error"
+                        if event and event.is_directory:
+                            trigger_reason += " (directory event)"
+                        elif not event_processed_differentially:
+                            trigger_reason += " (error during differential update or unhandled file event)"
+
+                        logger.info(f"[Worker] {trigger_reason.capitalize()} triggers full re-analysis.")
+                        self._run_analysis_and_update_memory() # This handles locking internally
+                        logger.info("[Worker] Background full re-analysis complete.")
                     # ---------------------------------------------------- #
 
                     self._event_queue.task_done()
                 except queue.Empty:
                     # Timeout reached, loop again to check stop signal
+                    # タイムアウトに達しました。再度ループして停止シグナルを確認します
                     continue
                 except Exception as e:
-                    logger.error(f"[Worker] Error processing event: {e}", exc_info=True)
-                    # How to handle errors? Continue? Stop?
+                    # Catch potential errors resolving path or other unexpected issues
+                    # パス解決中の潜在的なエラーやその他の予期しない問題をキャッチします
+                    event_path = event.src_path if event else "N/A"
+                    logger.error(f"[Worker] Error processing event for path '{event_path}': {e}", exc_info=True)
+                    # Avoid getting stuck in a loop; mark task as done if possible
+                    # ループに陥るのを避けます。可能であればタスクを完了としてマークします
+                    try:
+                        if self._event_queue and not self._event_queue.empty(): # Check if queue exists and is not empty
+                             self._event_queue.task_done()
+                    except Exception as qe:
+                         logger.error(f"[Worker] Error marking task done after outer exception: {qe}")
             logger.info("Background analysis worker stopped.")
+        # --- End of background worker thread --- # (Make sure this marker helps identify the end)
 
         # Initialize and start the monitor
         self._event_monitor = FileSystemEventMonitor(

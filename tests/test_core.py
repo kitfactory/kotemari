@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock, call
 import datetime
 import logging
 import threading # For sleep, and potentially for future watch tests
+import time # For watcher tests
 
 # Import Kotemari from the package root
 # パッケージルートから Kotemari をインポートします
@@ -13,6 +14,7 @@ from kotemari.domain.dependency_info import DependencyInfo, DependencyType
 from kotemari.domain.exceptions import AnalysisError, FileNotFoundErrorInAnalysis, DependencyError
 from kotemari.usecase.project_analyzer import ProjectAnalyzer
 from kotemari.utility.path_resolver import PathResolver
+from kotemari.domain.file_system_event import FileSystemEvent
 
 # Create a logger instance for this test module
 logger = logging.getLogger(__name__)
@@ -616,4 +618,656 @@ def test_analysis_cache_invalid_ignored(mock_analyze, setup_facade_test_project)
     # 日本語: 内部キャッシュ（辞書）がフォールバック分析から導出された期待される辞書と一致することを表明します。
     expected_fallback_cache = {fi.path: fi for fi in mock_results_fallback}
     assert kotemari._analysis_results == expected_fallback_cache # Results should be from analysis
-    logger.info("Invalid cache ignore test passed.") 
+    assert "Ignoring invalid cache file" in caplog.text
+    logger.info("Invalid cache ignore test passed.")
+
+@pytest.fixture
+def mock_analyzer_for_index(mocker, tmp_path):
+    """
+    Creates a mock ProjectAnalyzer and a predefined list of FileInfo objects
+    for testing the reverse dependency index and related functionalities.
+    The FileInfo objects simulate a simple project structure:
+    main.py -> utils.py
+    api.py -> utils.py
+    new_dep.py (no dependencies)
+
+    リバース依存関係インデックスと関連機能のテスト用に、
+    モック ProjectAnalyzer と事前定義された FileInfo オブジェクトのリストを作成します。
+    FileInfo オブジェクトは、単純なプロジェクト構造をシミュレートします:
+    main.py -> utils.py
+    api.py -> utils.py
+    new_dep.py (依存関係なし)
+    """
+    logger.debug("Setting up mock_analyzer_for_index fixture...")
+    mock_analyzer = mocker.MagicMock(spec=ProjectAnalyzer)
+    project_root_for_mock = tmp_path / "test_project"
+    # Ensure the mock project root directory exists for path resolution
+    # パス解決のためにモックプロジェクトルートディレクトリが存在することを確認します
+    project_root_for_mock.mkdir(parents=True, exist_ok=True)
+
+    # Define mock FileInfo objects with dependencies
+    # 依存関係を持つモック FileInfo オブジェクトを定義します
+    main_py_path = project_root_for_mock / "main.py"
+    utils_py_path = project_root_for_mock / "utils.py"
+    api_py_path = project_root_for_mock / "api.py"
+    new_dep_py_path = project_root_for_mock / "new_dep.py"
+
+    # Make sure resolved_path points to the correct mock file path
+    # resolved_path が正しいモックファイルパスを指していることを確認します
+    mock_files = [
+        FileInfo(
+            path=main_py_path,
+            mtime=datetime.datetime.now(),
+            size=100,
+            hash="main_hash",
+            language="Python",
+            dependencies=[
+                DependencyInfo(
+                    "main",
+                    dependency_type=DependencyType.INTERNAL_ABSOLUTE,
+                    resolved_name="utils",
+                    module_name="utils", # Original import name
+                    level=0,
+                    resolved_path=utils_py_path.resolve() # Add resolved path
+                )
+            ],
+            dependencies_stale=False
+        ),
+        FileInfo(
+            path=utils_py_path,
+            mtime=datetime.datetime.now(),
+            size=50,
+            hash="utils_hash",
+            language="Python",
+            dependencies=[], # utils.py has no dependencies in this mock
+                             # このモックでは utils.py に依存関係はありません
+            dependencies_stale=False
+        ),
+        FileInfo(
+            path=api_py_path,
+            mtime=datetime.datetime.now(),
+            size=80,
+            hash="api_hash",
+            language="Python",
+            dependencies=[
+                DependencyInfo(
+                    "api",
+                    dependency_type=DependencyType.INTERNAL_ABSOLUTE,
+                    resolved_name="utils",
+                    module_name="utils",
+                    level=0,
+                    resolved_path=utils_py_path.resolve() # Add resolved path
+                )
+            ],
+            dependencies_stale=False
+        ),
+         FileInfo( # Add FileInfo for new_dep.py for modification tests
+                  # 変更テストのために new_dep.py の FileInfo を追加します
+            path=new_dep_py_path,
+            mtime=datetime.datetime.now(),
+            size=30,
+            hash="new_dep_hash",
+            language="Python",
+            dependencies=[],
+            dependencies_stale=False
+        ),
+    ]
+
+    # Mock the analyze method to return these files
+    # これらのファイルを返すように analyze メソッドをモックします
+    mock_analyzer.analyze.return_value = mock_files
+
+    # Mock analyze_single_file to return the corresponding FileInfo or None
+    # 対応する FileInfo または None を返すように analyze_single_file をモックします
+    def mock_analyze_single(file_path: Path):
+        resolved_path = file_path.resolve()
+        for f_info in mock_files:
+            if f_info.path.resolve() == resolved_path:
+                logger.debug(f"mock_analyze_single returning mock for: {resolved_path}")
+                return f_info
+        logger.debug(f"mock_analyze_single returning None for: {resolved_path}")
+        return None
+    mock_analyzer.analyze_single_file.side_effect = mock_analyze_single
+
+    return mock_analyzer, mock_files
+
+# Test function for initial build
+# 初期構築のためのテスト関数
+def test_reverse_index_build_initial(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if the _reverse_dependency_index is built correctly after initial analysis.
+    初期分析後に _reverse_dependency_index が正しく構築されるかをテストします。
+    """
+    mock_analyzer, mock_analysis_list = mock_analyzer_for_index
+    # Mock ProjectAnalyzer within Kotemari's init or replace the instance
+    # Kotemari の init 内で ProjectAnalyzer をモックするか、インスタンスを置き換えます
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    # Mock ConfigManager to avoid filesystem access for config
+    # 設定のためのファイルシステムアクセスを避けるために ConfigManager をモックします
+    mocker.patch('kotemari.core.ConfigManager')
+
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+    # Create dummy files for path resolution if necessary (might not be needed if analyzer is fully mocked)
+    # パス解決に必要なダミーファイルを作成します (アナライザーが完全にモックされていれば不要かもしれません)
+    (project_root / "main.py").touch()
+    (project_root / "utils.py").touch()
+    (project_root / "api.py").touch()
+    (project_root / "new_dep.py").touch() # For later modification test
+
+    # Initialize Kotemari (this will call _run_analysis_and_update_memory -> _build_reverse_dependency_index)
+    # Kotemari を初期化します (これにより _run_analysis_and_update_memory -> _build_reverse_dependency_index が呼び出されます)
+    kotemari = Kotemari(project_root=project_root)
+
+    # Assertions
+    assert kotemari.project_analyzed
+    # Access internal state for verification (use with caution)
+    # 検証のために内部状態にアクセスします (注意して使用してください)
+    # Use getattr to bypass potential private access issues, or make it testable
+    # プライベートアクセスの問題を回避するために getattr を使用するか、テスト可能にします
+    reverse_index = getattr(kotemari, '_reverse_dependency_index', None)
+    analysis_results = getattr(kotemari, '_analysis_results', None)
+
+    assert reverse_index is not None, "_reverse_dependency_index attribute not found"
+    assert analysis_results is not None, "_analysis_results attribute not found"
+
+    # Expected index based on mock data: utils.py is depended on by main.py and api.py
+    # モックデータに基づく期待されるインデックス: utils.py は main.py と api.py によって依存されています
+    expected_index = {
+        (project_root / "utils.py").resolve(): {
+            (project_root / "main.py").resolve(),
+            (project_root / "api.py").resolve()
+        }
+    }
+    resolved_index_keys = {p.resolve() for p in expected_index.keys()}
+    resolved_reverse_index_keys = {p.resolve() for p in reverse_index.keys()}
+
+    assert resolved_reverse_index_keys == resolved_index_keys, f"Expected index keys {resolved_index_keys}, got {resolved_reverse_index_keys}"
+
+    # Check the sets of dependents
+    # 依存元のセットを確認します
+    utils_path_resolved = (project_root / "utils.py").resolve()
+    expected_dependents = expected_index[utils_path_resolved]
+    actual_dependents = reverse_index.get(utils_path_resolved, set())
+    assert actual_dependents == expected_dependents, f"Expected dependents for utils.py {expected_dependents}, got {actual_dependents}"
+
+    # Ensure files are marked as not stale initially
+    # ファイルが初期状態で古いものとしてマークされていないことを確認します
+    for fi in analysis_results.values():
+        assert not fi.dependencies_stale, f"File {fi.path} should not be stale initially"
+
+# Add more tests below for create, delete, modify, and propagation...
+
+# --- Test Dependency Propagation Flag ---
+def test_dependency_propagation_flag_set_on_modify(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if modifying a file correctly sets the dependencies_stale flag on dependent files.
+    ファイルの変更が、依存ファイルの dependencies_stale フラグを正しく設定するかをテストします。
+    """
+    mock_analyzer, _ = mock_analyzer_for_index
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+    (project_root / "main.py").touch()
+    utils_path = project_root / "utils.py"
+    utils_path.touch()
+    (project_root / "api.py").touch()
+    (project_root / "new_dep.py").touch()
+
+    kotemari = Kotemari(project_root=project_root)
+    assert kotemari.project_analyzed
+
+    # Simulate modifying utils.py
+    # utils.py の変更をシミュレートします
+    modify_event = FileSystemEvent(event_type="modified", src_path=str(utils_path), is_directory=False)
+
+    # Process the event directly
+    # イベントを直接処理します
+    kotemari._process_event(modify_event)
+
+    # --- Verification ---
+    # Verify analyze_single_file was called for utils.py
+    # utils.py に対して analyze_single_file が呼び出されたことを確認します
+    mock_analyzer.analyze_single_file.assert_called_with(utils_path.resolve())
+
+    # Access internal state
+    # 内部状態にアクセスします
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # Check main.py and api.py (which depended on utils.py)
+    # main.py と api.py (utils.py に依存していた) を確認します
+    main_file_info = analysis_results.get((project_root / "main.py").resolve())
+    api_file_info = analysis_results.get((project_root / "api.py").resolve())
+    utils_file_info = analysis_results.get((project_root / "utils.py").resolve()) # The modified file itself
+
+    assert main_file_info is not None, "main.py not found in analysis results after event"
+    assert api_file_info is not None, "api.py not found in analysis results after event"
+    assert utils_file_info is not None, "utils.py not found in analysis results after event"
+
+    # Assert that files depending on utils.py are marked stale
+    # utils.py に依存するファイルが古いものとしてマークされていることをアサートします
+    assert main_file_info.dependencies_stale, "main.py dependencies should be marked stale after utils.py modified"
+    assert api_file_info.dependencies_stale, "api.py dependencies should be marked stale after utils.py modified"
+
+    # Assert that the modified file itself is NOT marked stale (it was just re-analyzed)
+    # 変更されたファイル自体は古いものとしてマークされていないことをアサートします (再分析されたばかりです)
+    assert not utils_file_info.dependencies_stale, "utils.py dependencies should NOT be marked stale after being modified"
+
+# --- Test Reverse Index Updates ---
+
+def test_reverse_index_update_on_create(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if creating a new file that depends on an existing one updates the reverse index.
+    既存ファイルに依存する新しいファイルを作成すると、リバースインデックスが更新されるかをテストします。
+    """
+    mock_analyzer, initial_mock_files = mock_analyzer_for_index
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+
+    # Initial setup (files are created by the fixture and mkdir)
+    utils_path = project_root / "utils.py"
+    main_path = project_root / "main.py"
+    api_path = project_root / "api.py"
+
+    # Initialize Kotemari (builds initial index)
+    kotemari = Kotemari(project_root=project_root)
+    assert kotemari.project_analyzed
+
+    # --- Simulate File Creation ---
+    new_feature_path = project_root / "new_feature.py"
+    new_feature_path.touch() # Simulate file creation on disk
+
+    # Define FileInfo for the new file, depending on utils.py
+    new_feature_file_info = FileInfo(
+        path=new_feature_path,
+        mtime=datetime.datetime.now(),
+        size=60,
+        hash="new_feature_hash",
+        language="Python",
+        dependencies=[
+            DependencyInfo(
+                "new_feature",
+                dependency_type=DependencyType.INTERNAL_ABSOLUTE,
+                resolved_name="utils",
+                module_name="utils",
+                level=0,
+                resolved_path=utils_path.resolve()
+            )
+        ],
+        dependencies_stale=False
+    )
+
+    # Update the mock for analyze_single_file to return the new info
+    original_side_effect = mock_analyzer.analyze_single_file.side_effect
+    def updated_analyze_single(file_path: Path):
+        if file_path.resolve() == new_feature_path.resolve():
+            logger.debug(f"mock_analyze_single returning mock for new file: {new_feature_path.resolve()}")
+            return new_feature_file_info
+        # Fallback to original mock behavior for other files
+        return original_side_effect(file_path)
+    mock_analyzer.analyze_single_file.side_effect = updated_analyze_single
+
+    # Simulate the file system event for creation
+    create_event = FileSystemEvent(event_type="created", src_path=str(new_feature_path), is_directory=False)
+    kotemari._process_event(create_event)
+
+    # --- Verification ---
+    # Verify analyze_single_file was called for the new file
+    mock_analyzer.analyze_single_file.assert_called_with(new_feature_path.resolve())
+
+    # Access internal state
+    reverse_index = getattr(kotemari, '_reverse_dependency_index', {})
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # Check if the new file info is added to analysis_results
+    assert new_feature_path.resolve() in analysis_results
+    assert analysis_results[new_feature_path.resolve()] == new_feature_file_info
+
+    # Check if utils.py now lists new_feature.py as a dependent
+    utils_dependents = reverse_index.get(utils_path.resolve(), set())
+    expected_dependents = {
+        main_path.resolve(),
+        api_path.resolve(),
+        new_feature_path.resolve() # The new file should be added
+    }
+    assert utils_dependents == expected_dependents, \
+        f"Expected dependents for utils.py {expected_dependents}, got {utils_dependents}"
+
+def test_reverse_index_update_on_delete(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if deleting a file correctly updates the reverse index,
+    removing the deleted file as a key and from dependent sets.
+    ファイルを削除すると、削除されたファイルをキーとして、
+    および依存セットから削除することで、リバースインデックスが正しく更新されるかをテストします。
+    """
+    mock_analyzer, initial_mock_files = mock_analyzer_for_index
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+
+    # Initial setup paths
+    utils_path = project_root / "utils.py"
+    main_path = project_root / "main.py"
+    api_path = project_root / "api.py"
+
+    # Initialize Kotemari (builds initial index)
+    kotemari = Kotemari(project_root=project_root)
+    assert kotemari.project_analyzed
+
+    # --- Simulate File Deletion ---
+    # Simulate utils.py being deleted from the filesystem (optional, event is key)
+    utils_path.unlink(missing_ok=True)
+
+    # Configure mock analyze_single_file to return None for the deleted file
+    original_side_effect = mock_analyzer.analyze_single_file.side_effect
+    def delete_aware_analyze_single(file_path: Path):
+        if file_path.resolve() == utils_path.resolve():
+            logger.debug(f"mock_analyze_single returning None for deleted file: {utils_path.resolve()}")
+            return None # Simulate file not found or ignored after deletion
+        return original_side_effect(file_path)
+    mock_analyzer.analyze_single_file.side_effect = delete_aware_analyze_single
+
+    # Simulate the file system event for deletion
+    delete_event = FileSystemEvent(event_type="deleted", src_path=str(utils_path), is_directory=False)
+    kotemari._process_event(delete_event)
+
+    # --- Verification ---
+    # Access internal state
+    reverse_index = getattr(kotemari, '_reverse_dependency_index', {})
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # 1. Check if the deleted file is removed from analysis_results
+    assert utils_path.resolve() not in analysis_results, \
+        f"Deleted file {utils_path} should be removed from analysis results"
+
+    # 2. Check if the deleted file (utils.py) is removed as a key from the reverse index
+    assert utils_path.resolve() not in reverse_index, \
+        f"Deleted file {utils_path} should be removed as a key from reverse dependency index"
+
+    # 3. Verify that files that previously depended on utils.py still exist
+    #    and their dependency lists *haven't* been cleared yet (re-analysis is separate)
+    main_file_info = analysis_results.get(main_path.resolve())
+    api_file_info = analysis_results.get(api_path.resolve())
+    assert main_file_info is not None, "main.py should still be in analysis results"
+    assert api_file_info is not None, "api.py should still be in analysis results"
+
+    # Check dependency list length or content if necessary - expecting it unchanged for now
+    # 必要に応じて依存関係リストの長さまたは内容を確認します - 現時点では変更されていないことを期待します
+    assert len(main_file_info.dependencies) == 1, "main.py dependencies should not be cleared by deleting utils.py (yet)"
+    assert main_file_info.dependencies[0].module_name == "utils", "main.py should still list utils as dependency"
+    assert len(api_file_info.dependencies) == 1, "api.py dependencies should not be cleared by deleting utils.py (yet)"
+    assert api_file_info.dependencies[0].module_name == "utils", "api.py should still list utils as dependency"
+
+    # Optional: If utils.py itself had dependencies, check they are removed from other files' dependent sets
+    # For this mock, utils.py has no dependencies, so this check isn't applicable here.
+
+# --- Test Dependency Propagation on Delete ---
+
+def test_dependency_propagation_on_delete(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if deleting a file correctly marks its dependents as having stale dependencies.
+    ファイルを削除すると、その依存ファイルが古い依存関係を持つものとして正しくマークされるかをテストします。
+    """
+    mock_analyzer, _ = mock_analyzer_for_index
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+
+    # Initial setup paths
+    utils_path = project_root / "utils.py"
+    main_path = project_root / "main.py"
+    api_path = project_root / "api.py"
+
+    # Initialize Kotemari
+    kotemari = Kotemari(project_root=project_root)
+    assert kotemari.project_analyzed
+
+    # Initial check: main.py and api.py should not be stale
+    initial_analysis_results = getattr(kotemari, '_analysis_results', {})
+    assert not initial_analysis_results[main_path.resolve()].dependencies_stale
+    assert not initial_analysis_results[api_path.resolve()].dependencies_stale
+
+    # --- Simulate File Deletion of utils.py ---
+    utils_path.unlink(missing_ok=True)
+
+    # Configure mock analyze_single_file to return None for the deleted file
+    original_side_effect = mock_analyzer.analyze_single_file.side_effect
+    def delete_aware_analyze_single(file_path: Path):
+        if file_path.resolve() == utils_path.resolve():
+            return None
+        return original_side_effect(file_path)
+    mock_analyzer.analyze_single_file.side_effect = delete_aware_analyze_single
+
+    # Simulate the file system event for deletion
+    delete_event = FileSystemEvent(event_type="deleted", src_path=str(utils_path), is_directory=False)
+    kotemari._process_event(delete_event)
+
+    # --- Verification ---
+    # Access internal state again
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # utils.py should be removed
+    assert utils_path.resolve() not in analysis_results
+
+    # main.py and api.py (which depended on utils.py) should now be marked stale
+    main_file_info = analysis_results.get(main_path.resolve())
+    api_file_info = analysis_results.get(api_path.resolve())
+
+    assert main_file_info is not None, "main.py should still exist after utils.py deletion"
+    assert api_file_info is not None, "api.py should still exist after utils.py deletion"
+
+    assert main_file_info.dependencies_stale, "main.py should be marked stale after deleting its dependency utils.py"
+    assert api_file_info.dependencies_stale, "api.py should be marked stale after deleting its dependency utils.py"
+
+    # Optional: If utils.py itself had dependencies, check they are removed from other files' dependent sets
+    # For this mock, utils.py has no dependencies, so this check isn't applicable here. 
+
+# --- Test Reverse Index Update on Modify --- #
+
+def test_reverse_index_update_on_modify(mocker, mock_analyzer_for_index, tmp_path):
+    """
+    Tests if modifying a file's dependencies correctly updates the reverse index.
+    (e.g., utils.py now depends on new_dep.py)
+    ファイルの依存関係を変更すると、リバースインデックスが正しく更新されるかをテストします。
+    (例: utils.py が new_dep.py に依存するようになった場合)
+    """
+    mock_analyzer, initial_mock_files = mock_analyzer_for_index
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+    project_root = tmp_path / "test_project"
+    project_root.mkdir(exist_ok=True)
+
+    # Initial setup paths
+    utils_path = project_root / "utils.py"
+    main_path = project_root / "main.py"
+    api_path = project_root / "api.py"
+    new_dep_path = project_root / "new_dep.py"
+
+    # Initialize Kotemari
+    kotemari = Kotemari(project_root=project_root)
+    assert kotemari.project_analyzed
+
+    # --- Simulate Modification of utils.py --- #
+    # utils.py now depends on new_dep.py
+    modified_utils_info = FileInfo(
+        path=utils_path,
+        mtime=datetime.datetime.now(), # Simulate time change
+        size=55, # Simulate size change
+        hash="utils_hash_modified", # Simulate hash change
+        language="Python",
+        dependencies=[
+            DependencyInfo(
+                "utils",
+                dependency_type=DependencyType.INTERNAL_ABSOLUTE,
+                resolved_name="new_dep",
+                module_name="new_dep",
+                level=0,
+                resolved_path=new_dep_path.resolve()
+            )
+        ],
+        dependencies_stale=False # Itself is not stale after analysis
+    )
+
+    # Update the mock for analyze_single_file
+    original_side_effect = mock_analyzer.analyze_single_file.side_effect
+    def modify_aware_analyze_single(file_path: Path):
+        resolved_path = file_path.resolve()
+        if resolved_path == utils_path.resolve():
+            logger.debug(f"mock_analyze_single returning modified info for: {resolved_path}")
+            return modified_utils_info
+        # Need to return info for main.py and api.py if they are re-analyzed due to staleness
+        elif resolved_path == main_path.resolve():
+            # Find original main info (assuming fixture returns list)
+            main_info = next((f for f in initial_mock_files if f.path.resolve() == main_path.resolve()), None)
+            if main_info: main_info.dependencies_stale=False # Reset stale flag after re-analysis
+            logger.debug(f"mock_analyze_single returning original info for main: {main_path.resolve()}")
+            return main_info
+        elif resolved_path == api_path.resolve():
+            api_info = next((f for f in initial_mock_files if f.path.resolve() == api_path.resolve()), None)
+            if api_info: api_info.dependencies_stale=False # Reset stale flag after re-analysis
+            logger.debug(f"mock_analyze_single returning original info for api: {api_path.resolve()}")
+            return api_info
+        else:
+            # Fallback for other files (like new_dep.py itself if needed)
+            return original_side_effect(file_path)
+    mock_analyzer.analyze_single_file.side_effect = modify_aware_analyze_single
+
+    # Simulate the file system event for modification
+    modify_event = FileSystemEvent(event_type="modified", src_path=str(utils_path), is_directory=False)
+    kotemari._process_event(modify_event)
+
+    # --- Verification --- #
+    # Access internal state
+    reverse_index = getattr(kotemari, '_reverse_dependency_index', {})
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # 1. Verify utils.py info is updated in analysis_results
+    assert analysis_results.get(utils_path.resolve()) == modified_utils_info
+
+    # 2. Verify reverse index: new_dep.py should now list utils.py as a dependent
+    new_dep_dependents = reverse_index.get(new_dep_path.resolve(), set())
+    assert new_dep_dependents == {utils_path.resolve()}, \
+        f"Expected new_dep.py to be depended on by utils.py, got {new_dep_dependents}"
+
+    # 3. Verify reverse index: utils.py should still list main.py and api.py as dependents
+    #    (Because the *modification* happened to utils.py, its dependents don't change in the index
+    #     immediately, only their stale status changes. The index key `utils.py` itself is not removed.)
+    utils_dependents = reverse_index.get(utils_path.resolve(), set())
+    expected_utils_dependents = {main_path.resolve(), api_path.resolve()}
+    assert utils_dependents == expected_utils_dependents, \
+        f"Expected utils.py to still be depended on by main/api, got {utils_dependents}"
+
+    # 4. Verify staleness propagation (already tested, but good to re-check)
+    main_file_info = analysis_results.get(main_path.resolve())
+    api_file_info = analysis_results.get(api_path.resolve())
+    assert main_file_info.dependencies_stale, "main.py should be marked stale after utils.py modification"
+    assert api_file_info.dependencies_stale, "api.py should be marked stale after utils.py modification"
+
+# --- Test Circular Dependencies --- #
+
+def test_circular_dependency_handling(mocker, tmp_path):
+    """
+    Tests if the system handles circular dependencies gracefully during index building
+    and propagation.
+    循環依存がインデックス構築と伝播中に適切に処理されるかをテストします。
+    Scenario: a.py -> b.py, b.py -> a.py
+    """
+    project_root = tmp_path / "circular_project"
+    project_root.mkdir()
+    a_py_path = project_root / "a.py"
+    b_py_path = project_root / "b.py"
+
+    # Create dummy files
+    a_py_path.touch()
+    b_py_path.touch()
+
+    # --- Mock ProjectAnalyzer for circular dependency --- #
+    mock_analyzer = mocker.MagicMock(spec=ProjectAnalyzer)
+
+    file_info_a = FileInfo(
+        path=a_py_path,
+        mtime=datetime.datetime.now(), size=50, hash="a_hash", language="Python",
+        dependencies=[DependencyInfo("a", module_name="b", dependency_type=DependencyType.INTERNAL_ABSOLUTE, resolved_path=b_py_path.resolve())],
+        dependencies_stale=False
+    )
+    file_info_b = FileInfo(
+        path=b_py_path,
+        mtime=datetime.datetime.now(), size=60, hash="b_hash", language="Python",
+        dependencies=[DependencyInfo("b", module_name="a", dependency_type=DependencyType.INTERNAL_ABSOLUTE, resolved_path=a_py_path.resolve())],
+        dependencies_stale=False
+    )
+    mock_analysis_list = [file_info_a, file_info_b]
+
+    # Mock analyze method for initial analysis
+    mock_analyzer.analyze.return_value = mock_analysis_list
+
+    # Mock analyze_single_file for potential updates
+    def mock_analyze_single(file_path: Path):
+        resolved_path = file_path.resolve()
+        if resolved_path == a_py_path.resolve():
+            # Simulate re-analysis resetting stale flag if needed
+            file_info_a.dependencies_stale = False
+            return file_info_a
+        elif resolved_path == b_py_path.resolve():
+            file_info_b.dependencies_stale = False
+            return file_info_b
+        return None
+    mock_analyzer.analyze_single_file.side_effect = mock_analyze_single
+
+    mocker.patch('kotemari.core.ProjectAnalyzer', return_value=mock_analyzer)
+    mocker.patch('kotemari.core.ConfigManager')
+
+    # --- Initialize Kotemari --- #
+    # Expect initialization to complete without infinite loops or errors
+    try:
+        kotemari = Kotemari(project_root=project_root)
+        assert kotemari.project_analyzed, "Project analysis should complete even with circular dependencies"
+    except Exception as e:
+        pytest.fail(f"Kotemari initialization failed with circular dependency: {e}")
+
+    # --- Verification 1: Reverse Index --- #
+    reverse_index = getattr(kotemari, '_reverse_dependency_index', {})
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+
+    # Check if a.py has b.py as dependent
+    a_dependents = reverse_index.get(a_py_path.resolve(), set())
+    assert a_dependents == {b_py_path.resolve()}, "Expected a.py to be depended on by b.py"
+
+    # Check if b.py has a.py as dependent
+    b_dependents = reverse_index.get(b_py_path.resolve(), set())
+    assert b_dependents == {a_py_path.resolve()}, "Expected b.py to be depended on by a.py"
+
+    # --- Verification 2: Propagation on Modify --- #
+    # Simulate modifying a.py
+    modified_a_info = FileInfo(
+        path=a_py_path,
+        mtime=datetime.datetime.now(), size=55, hash="a_hash_mod", language="Python",
+        dependencies=[DependencyInfo("a", module_name="b", dependency_type=DependencyType.INTERNAL_ABSOLUTE, resolved_path=b_py_path.resolve())], # Dependency unchanged
+        dependencies_stale=False
+    )
+
+    # Update mock for analyze_single_file to return modified info for a.py
+    def updated_mock_analyze_single(file_path: Path):
+        resolved_path = file_path.resolve()
+        if resolved_path == a_py_path.resolve():
+            return modified_a_info # Return modified info
+        elif resolved_path == b_py_path.resolve():
+            file_info_b.dependencies_stale = False # b getting re-analyzed
+            return file_info_b
+        return None
+    mock_analyzer.analyze_single_file.side_effect = updated_mock_analyze_single
+
+    # Process modify event for a.py
+    modify_event = FileSystemEvent(event_type="modified", src_path=str(a_py_path), is_directory=False)
+    kotemari._process_event(modify_event)
+
+    # Check if b.py is marked stale
+    analysis_results = getattr(kotemari, '_analysis_results', {})
+    b_file_info_after_modify = analysis_results.get(b_py_path.resolve())
+    assert b_file_info_after_modify is not None
+    assert b_file_info_after_modify.dependencies_stale, "b.py should be marked stale after a.py modification in circular dependency" 

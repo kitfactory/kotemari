@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List, Callable
 import pathspec
 import logging
+import os
 
 from ..gateway.gitignore_reader import GitignoreReader
 from ..domain.project_config import ProjectConfig # For future use
@@ -53,54 +54,103 @@ class IgnoreRuleProcessor:
         """
         # Search starts from the project root itself
         # 検索はプロジェクトルート自体から開始します
-        return GitignoreReader.find_and_read_all(self.project_root)
+        specs = GitignoreReader.find_and_read_all(self.project_root)
+        if not isinstance(specs, list) or not all(isinstance(s, pathspec.PathSpec) for s in specs):
+            logger.warning(f"GitignoreReader.find_and_read_all did not return a list of PathSpec objects. Got: {type(specs)}")
+            # Attempt to handle if it returned lines or a single spec incorrectly
+            # 不正に 行または単一のスペックが返された場合に処理を試みます
+            if isinstance(specs, pathspec.PathSpec):
+                return [specs]
+            # If it's something else, return empty list to avoid errors
+            # 他の何かである場合は、エラーを回避するために空のリストを返します
+            return []
+        return specs
 
-    def get_ignore_function(self) -> Callable[[Path], bool]:
+    def get_ignore_function(self) -> Callable[[str], bool]:
         """
-        Returns a function that checks if a given absolute path should be ignored.
-        The returned function considers .gitignore rules (and potentially config rules later).
-        与えられた絶対パスが無視されるべきかどうかをチェックする関数を返します。
-        返される関数は、.gitignore ルール（および将来的には設定ルール）を考慮します。
+        Returns a function that checks if a given path should be ignored based on all rules.
+        すべてのルールに基づいて、指定されたパスを無視すべきかどうかをチェックする関数を返します。
 
         Returns:
-            Callable[[Path], bool]: A function that takes an absolute Path and returns True if it should be ignored.
-                                     絶対パスを受け取り、無視すべき場合に True を返す関数。
+            Callable[[str], bool]: A function that takes a path string and returns True if it should be ignored.
+                                   パス文字列を受け取り、無視すべき場合に True を返す関数。
         """
-        def is_ignored(abs_path: Path) -> bool:
-            """
-            Checks if the path matches any ignore rule.
-            パスがいずれかの無視ルールに一致するかどうかをチェックします。
-            """
-            if not abs_path.is_absolute():
-                logger.warning(f"Received non-absolute path in ignore check: {abs_path}. Resolving relative to project root.")
-                abs_path = self.path_resolver.resolve_absolute(abs_path, self.project_root)
+        # Use the pre-compiled specs from __init__
+        # __init__ から事前にコンパイルされたスペックを使用します
+        compiled_specs = self._gitignore_specs
+        project_root_str = str(self.project_root)
 
-            # pathspec expects paths relative to the directory containing the .gitignore file.
-            # However, gitignore patterns often match against the path relative to the repository root.
-            # We will match against the path relative to our project_root.
-            # pathspec は .gitignore ファイルを含むディレクトリからの相対パスを期待します。
-            # しかし、gitignore パターンはリポジトリルートからの相対パスに対して照合されることがよくあります。
-            # ここでは、project_root からの相対パスに対して照合します。
+        if not compiled_specs:
+            logger.debug("No ignore specs found or configured.")
+            return lambda _: False # No specs means ignore nothing
+
+        logger.debug(f"Using {len(compiled_specs)} compiled PathSpec object(s) for ignore checks.")
+
+        # The function returned will perform the check using PathSpec
+        # 返される関数は PathSpec を使用してチェックを実行します
+        def should_ignore_path(path_str: str) -> bool:
             try:
-                relative_path = abs_path.relative_to(self.project_root)
+                # Normalize the input path and ensure it's absolute
+                # 入力パスを正規化し、絶対パスであることを確認します
+                absolute_path = Path(path_str).resolve()
+
+                # pathspec expects paths relative to the directory containing the .gitignore
+                # (or in our case, relative to the project root).
+                # pathspec は .gitignore を含むディレクトリからの相対パスを期待します
+                # （または我々の場合は、プロジェクトルートからの相対パス）。
+                relative_path_str = os.path.relpath(absolute_path, project_root_str)
+                # Use forward slashes for pathspec matching consistency
+                # pathspec マッチングの一貫性のためにスラッシュを使用します
+                relative_path_posix = Path(relative_path_str).as_posix()
+
+                # Check against all loaded PathSpec objects
+                # ロードされたすべての PathSpec オブジェクトに対してチェックします
+                for spec in compiled_specs:
+                    if spec.match_file(relative_path_posix):
+                        logger.debug(f"Path '{absolute_path}' (relative: '{relative_path_posix}') matched ignore spec.")
+                        return True # Ignored if any spec matches
+
+                logger.debug(f"Path '{absolute_path}' did not match any ignore specs.")
+                return False # Not ignored if no specs match
             except ValueError:
-                # The path is outside the project root, typically should not happen during scan
-                # パスがプロジェクトルートの外にあります。通常、スキャン中には発生しません。
-                logger.warning(f"Path {abs_path} is outside the project root {self.project_root}. Not ignoring by default.")
-                return False
+                 # Path is likely outside the project root
+                 # パスはおそらくプロジェクトルートの外にあります
+                 logger.warning(f"Path '{path_str}' seems to be outside the project root '{project_root_str}'. Not ignoring.")
+                 return False
+            except Exception as e:
+                 # Catch unexpected errors during path processing or matching
+                 # パス処理またはマッチング中の予期しないエラーをキャッチします
+                 logger.error(f"Error checking ignore status for path '{path_str}': {e}", exc_info=True)
+                 return False # Default to not ignoring on error
 
-            # Check against .gitignore specs
-            # .gitignore スペックに対してチェックする
-            # pathspec handles directory matching correctly (e.g., `dir/` matches the directory)
-            # pathspec はディレクトリのマッチングを正しく処理します（例: `dir/` はディレクトリに一致）
-            is_gitignored = any(spec.match_file(relative_path.as_posix()) for spec in self._gitignore_specs)
-            if is_gitignored:
-                logger.debug(f"Path ignored by .gitignore: {relative_path}")
-                return True
 
-            # TODO: Check against config ignore rules
-            # TODO: 設定の無視ルールに対してチェックする
+        return should_ignore_path
 
-            return False
+    def should_ignore(self, file_path: Path) -> bool:
+        """
+        Checks if a given file path should be ignored.
+        指定されたファイルパスを無視すべきかどうかをチェックします。
 
-        return is_ignored 
+        Args:
+            file_path (Path): The absolute path to the file to check.
+                              チェックするファイルへの絶対パス。
+
+        Returns:
+            bool: True if the file should be ignored, False otherwise.
+                  ファイルを無視すべき場合は True、そうでない場合は False。
+        """
+        # Resolve the path to ensure it's absolute and normalized
+        # パスが絶対パスで正規化されていることを確認するために解決します
+        absolute_path = file_path.resolve()
+        # Get the ignore function and call it
+        # 無視関数を取得して呼び出します
+        ignore_func = self.get_ignore_function()
+        # Pass the string representation of the absolute path
+        # 絶対パスの文字列表現を渡します
+        is_ignored = ignore_func(str(absolute_path))
+        logger.debug(f"Ignore check for {absolute_path}: {'Ignored' if is_ignored else 'Not Ignored'}")
+        return is_ignored
+
+# Example usage (for testing or demonstration)
+# 使用例 (テストまたはデモンストレーション用)
+# ... existing code ... 

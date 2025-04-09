@@ -25,6 +25,8 @@ class FileInfo:
                                   検出されたファイルのプログラミング言語。
         dependencies (List[DependencyInfo]): List of dependencies found in the file.
                                              ファイル内で見つかった依存関係のリスト。
+        dependencies_stale (bool): Flag to indicate if dependencies need re-calculation.
+                                  依存関係の再計算が必要かどうかを示すフラグ
     """
     path: Path
     mtime: datetime.datetime
@@ -32,3 +34,4 @@ class FileInfo:
     hash: Optional[str] = None
     language: Optional[str] = None
     dependencies: List[DependencyInfo] = field(default_factory=list)
+    dependencies_stale: bool = False

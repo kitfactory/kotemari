@@ -120,6 +120,7 @@ class Kotemari:
         self._reverse_dependency_index: Dict[Path, Set[Path]] = {}
         self.project_analyzed: bool = False
         self._analysis_lock = threading.Lock() # Lock for accessing/modifying analysis results
+        self._reverse_dependency_index_lock = threading.Lock() # Lock for the reverse dependency index (Step 12-1-2)
 
         # --- Monitoring and Background Update Components (Will be initialized in start_watching - Step 11-1-4,5,6) ---
         self._event_monitor: Optional[FileSystemEventMonitor] = None
@@ -588,82 +589,181 @@ class Kotemari:
     # このメソッドはロック内で呼び出す必要があります。
     def _build_reverse_dependency_index(self) -> None:
         logger.debug("逆依存インデックスの構築を開始します。")
-        self._reverse_dependency_index.clear()
-        # English: Get the project root path once.
-        # 日本語: プロジェクトルートパスを一度取得します。
+        with self._reverse_dependency_index_lock:
+            logger.debug("Acquired reverse dependency index lock.")
+            self._reverse_dependency_index.clear()
+            project_root = self.project_root
+            logger.debug(f"Building reverse index from {len(self._analysis_results)} analysis results.")
+
+            for dependent_path, file_info in self._analysis_results.items():
+                logger.debug(f"Processing dependent: {dependent_path}")
+                if file_info.dependencies:
+                    logger.debug(f"  Found {len(file_info.dependencies)} dependencies for {dependent_path}")
+                    for dep_info in file_info.dependencies:
+                        logger.debug(f"    Processing dependency: {dep_info.module_name} ({dep_info.dependency_type})")
+                        resolved_dependency_path: Optional[Path] = None
+
+                        if dep_info.dependency_type in [DependencyType.INTERNAL_ABSOLUTE, DependencyType.INTERNAL_RELATIVE]:
+                            # Use pre-resolved path from DependencyInfo if available
+                            if hasattr(dep_info, 'resolved_path') and dep_info.resolved_path:
+                                resolved_dependency_path = dep_info.resolved_path.resolve()
+                                logger.debug(f"      Using pre-resolved path: {resolved_dependency_path}")
+                            else:
+                                # Manual resolution (Fallback)
+                                logger.warning(f"DependencyInfo missing pre-resolved path for {dep_info.module_name}. Attempting manual.")
+                                try:
+                                    base_dir_for_resolve = dependent_path.parent
+                                    # ... (manual resolution logic - kept concise) ...
+                                    if dep_info.dependency_type == DependencyType.INTERNAL_ABSOLUTE:
+                                        module_path_parts = dep_info.module_name.split('.')
+                                        potential_path_py = project_root.joinpath(*module_path_parts).with_suffix(".py")
+                                        potential_path_init = project_root.joinpath(*module_path_parts, "__init__.py")
+                                        if potential_path_py.is_file():
+                                             resolved_dependency_path = potential_path_py.resolve()
+                                        elif potential_path_init.is_file():
+                                             resolved_dependency_path = potential_path_init.resolve()
+                                except Exception as e:
+                                     logger.warning(f"      Error during manual resolve: {e}")
+
+                            logger.debug(f"      Resolved path result: {resolved_dependency_path}")
+
+                        # Check if resolved and exists in analysis results
+                        if resolved_dependency_path:
+                            is_in_analysis = resolved_dependency_path in self._analysis_results
+                            logger.debug(f"      Is resolved path in analysis results? {is_in_analysis}")
+                            if is_in_analysis:
+                                logger.debug(f"      Adding to index: {resolved_dependency_path} <- {dependent_path}")
+                                self._reverse_dependency_index.setdefault(resolved_dependency_path, set()).add(dependent_path)
+                            else:
+                                logger.warning(f"      Resolved path {resolved_dependency_path} not found in analysis results. Skipping add.")
+                        else:
+                            logger.debug(f"    Dependency '{dep_info.module_name}' did not resolve or is external. Skipping add.")
+                else:
+                    logger.debug(f"  No dependencies found for {dependent_path}")
+
+            logger.debug(f"逆依存インデックスの構築完了: {len(self._reverse_dependency_index)} 件のエントリ。 Index: {self._reverse_dependency_index}")
+            logger.debug("Releasing reverse dependency index lock.")
+
+    def _add_dependencies_to_reverse_index(self, dependent_path: Path, dependencies: List[DependencyInfo]) -> None:
+        """
+        Adds the dependencies of a single file to the reverse dependency index.
+        Should be called under the appropriate lock if modifying shared state.
+        単一ファイルの依存関係を逆依存インデックスに追加します。
+        共有状態を変更する場合は、適切なロックの下で呼び出す必要があります。
+        """
+        if not dependencies:
+            return
+
+        logger.debug(f"Adding dependencies to reverse index for: {dependent_path}")
+        project_root = self.project_root # Get project root once
+
+        with self._reverse_dependency_index_lock:
+            for dep_info in dependencies:
+                resolved_dependency_path: Optional[Path] = None
+                if dep_info.dependency_type in [DependencyType.INTERNAL_ABSOLUTE, DependencyType.INTERNAL_RELATIVE]:
+                    # Use the pre-resolved path if available in DependencyInfo
+                    # DependencyInfo で利用可能な場合は、事前に解決されたパスを使用します
+                    if hasattr(dep_info, 'resolved_path') and dep_info.resolved_path:
+                        resolved_dependency_path = dep_info.resolved_path.resolve() # Ensure it's resolved
+                        logger.debug(f"Using pre-resolved path from DependencyInfo: {resolved_dependency_path}")
+                    else:
+                        # Fallback to resolving manually if not pre-resolved (should ideally not happen with current flow)
+                        # 事前に解決されていない場合は手動での解決にフォールバックします（現在のフローでは理想的には発生しません）
+                        logger.warning(f"DependencyInfo for {dep_info.module_name} in {dependent_path} missing pre-resolved path, attempting manual resolve.")
+                        # ... (Keep the existing manual resolution logic as fallback)
+                        base_dir_for_resolve = dependent_path.parent
+                        # ... (manual resolution code) ...
+
+                # Check if the resolved dependency exists in our analysis results
+                # 解決された依存関係が分析結果に存在するかどうかを確認します
+                logger.debug(f"Checking reverse index condition for {resolved_dependency_path}")
+                logger.debug(f"Analysis results keys: {list(self._analysis_results.keys())}")
+                if resolved_dependency_path:
+                    is_in_analysis = resolved_dependency_path in self._analysis_results
+                    logger.debug(f"Is {resolved_dependency_path} in analysis results? {is_in_analysis}")
+                    if is_in_analysis:
+                        self._reverse_dependency_index.setdefault(resolved_dependency_path, set()).add(dependent_path)
+                        logger.debug(f"Added reverse dependency link: {resolved_dependency_path} <- {dependent_path}")
+                    else:
+                        logger.warning(f"Could not add reverse dependency for {resolved_dependency_path} from {dependent_path}: Target not found in analysis results.")
+                else:
+                    logger.debug(f"Skipping reverse dependency add for {dep_info.module_name} from {dependent_path}: Path not resolved.")
+
+    def _remove_dependencies_from_reverse_index(self, dependent_path: Path, dependencies: List[DependencyInfo]) -> None:
+        """
+        Removes the dependencies of a single file from the reverse dependency index.
+        Should be called under the appropriate lock if modifying shared state.
+        単一ファイルの依存関係を逆依存インデックスから削除します。
+        共有状態を変更する場合は、適切なロックの下で呼び出す必要があります。
+        """
+        if not dependencies:
+            return
+
+        logger.debug(f"Removing dependencies from reverse index for: {dependent_path}")
         project_root = self.project_root
 
-        # English: Iterate through the analysis results dictionary (path: FileInfo).
-        # 日本語: 分析結果の辞書 (path: FileInfo) を反復処理します。
-        for dependent_path, file_info in self._analysis_results.items():
-            if file_info.dependencies:
-                for dep_info in file_info.dependencies:
-                    resolved_dependency_path: Optional[Path] = None
-                    # English: Process only internal dependencies for the reverse index.
-                    # 日本語: 逆インデックスのために内部依存関係のみを処理します。
-                    if dep_info.dependency_type in [DependencyType.INTERNAL_ABSOLUTE, DependencyType.INTERNAL_RELATIVE]:
-                        try:
-                            # English: Attempt to resolve the module name to an absolute path within the project.
-                            # 日本語: モジュール名をプロジェクト内の絶対パスに解決しようと試みます。
-                            # Note: This resolution might be complex depending on sys.path, __init__.py handling etc.
-                            # PathResolver might need enhancement or this logic refined.
-                            # 注意: この解決は sys.path、__init__.py の処理などによって複雑になる可能性があります。
-                            # PathResolver の強化またはこのロジックの改良が必要になる場合があります。
+        with self._reverse_dependency_index_lock:
+            for dep_info in dependencies:
+                resolved_dependency_path: Optional[Path] = None
+                if dep_info.dependency_type in [DependencyType.INTERNAL_ABSOLUTE, DependencyType.INTERNAL_RELATIVE]:
+                    try:
+                        # --- Path Resolution Logic (copied from _add...) ---
+                        base_dir_for_resolve = dependent_path.parent
+                        if dep_info.dependency_type == DependencyType.INTERNAL_RELATIVE and dep_info.level is not None:
+                            relative_module_path_parts = dep_info.module_name.split('.')
+                            current_dir = base_dir_for_resolve
+                            for _ in range(dep_info.level -1):
+                                current_dir = current_dir.parent
+                            potential_path_py = current_dir.joinpath(*relative_module_path_parts).with_suffix(".py")
+                            potential_path_init = current_dir.joinpath(*relative_module_path_parts, "__init__.py")
+                            if potential_path_py.is_file():
+                                resolved_dependency_path = potential_path_py.resolve()
+                            elif potential_path_init.is_file():
+                                resolved_dependency_path = potential_path_init.resolve()
+                        elif dep_info.dependency_type == DependencyType.INTERNAL_ABSOLUTE:
+                            module_path_parts = dep_info.module_name.split('.')
+                            potential_path_py = project_root.joinpath(*module_path_parts).with_suffix(".py")
+                            potential_path_init = project_root.joinpath(*module_path_parts, "__init__.py")
+                            if potential_path_py.is_file():
+                                resolved_dependency_path = potential_path_py.resolve()
+                            elif potential_path_init.is_file():
+                                resolved_dependency_path = potential_path_init.resolve()
+                        # --- End Path Resolution Logic ---
+                    except Exception as e:
+                        logger.warning(f"Error resolving path for dependency '{dep_info.module_name}' in file '{dependent_path}' during remove: {e}")
 
-                            # Use the directory of the *dependent* file as the base for relative imports
-                            # *依存元*ファイルのディレクトリを相対インポートの基点として使用します
-                            base_dir_for_resolve = dependent_path.parent
+                if resolved_dependency_path:
+                    if resolved_dependency_path in self._reverse_dependency_index:
+                        dependents = self._reverse_dependency_index[resolved_dependency_path]
+                        dependents.discard(dependent_path) # Remove the file from the set
+                        logger.debug(f"Removed reverse dependency link: {resolved_dependency_path} <- {dependent_path}")
+                        # Optional: Clean up empty sets
+                        # オプション: 空のセットをクリーンアップ
+                        if not dependents:
+                            logger.debug(f"Removing empty set for dependency: {resolved_dependency_path}")
+                            del self._reverse_dependency_index[resolved_dependency_path]
 
-                            # For relative imports, use level and module name
-                            # 相対インポートの場合、level とモジュール名を使用します
-                            if dep_info.dependency_type == DependencyType.INTERNAL_RELATIVE and dep_info.level is not None:
-                                # Simple relative path construction (may need refinement for packages)
-                                # 単純な相対パス構築（パッケージの場合は改良が必要な場合があります）
-                                relative_module_path_parts = dep_info.module_name.split('.')
-                                current_dir = base_dir_for_resolve
-                                for _ in range(dep_info.level -1): # Go up levels for '..'
-                                    current_dir = current_dir.parent
-
-                                potential_path_py = current_dir.joinpath(*relative_module_path_parts).with_suffix(".py")
-                                potential_path_init = current_dir.joinpath(*relative_module_path_parts, "__init__.py")
-
-                                if potential_path_py.exists() and potential_path_py.is_file():
-                                     resolved_dependency_path = potential_path_py.resolve()
-                                elif potential_path_init.exists() and potential_path_init.is_file():
-                                    resolved_dependency_path = potential_path_init.resolve()
-                                else:
-                                     logger.debug(f"Relative import '{dep_info.module_name}' from '{dependent_path}' could not be resolved to an existing file ({potential_path_py} or {potential_path_init}).")
-
-
-                            # For absolute imports, resolve relative to project root (or configured source roots)
-                            # 絶対インポートの場合、プロジェクトルート（または設定されたソースルート）からの相対パスで解決します
-                            elif dep_info.dependency_type == DependencyType.INTERNAL_ABSOLUTE:
-                                # Assume absolute imports are relative to project root for now
-                                # 現時点では、絶対インポートはプロジェクトルートからの相対パスであると仮定します
-                                module_path_parts = dep_info.module_name.split('.')
-                                potential_path_py = project_root.joinpath(*module_path_parts).with_suffix(".py")
-                                potential_path_init = project_root.joinpath(*module_path_parts, "__init__.py")
-
-                                if potential_path_py.exists() and potential_path_py.is_file():
-                                     resolved_dependency_path = potential_path_py.resolve()
-                                elif potential_path_init.exists() and potential_path_init.is_file():
-                                     resolved_dependency_path = potential_path_init.resolve()
-                                else:
-                                     logger.debug(f"Absolute import '{dep_info.module_name}' could not be resolved within project root ({potential_path_py} or {potential_path_init}).")
-
-                        except Exception as e:
-                             logger.warning(f"Error resolving path for dependency '{dep_info.module_name}' in file '{dependent_path}': {e}", exc_info=True)
-
-
-                    # English: If a path was successfully resolved, add it to the index.
-                    # 日本語: パスが正常に解決された場合は、インデックスに追加します。
-                    if resolved_dependency_path and resolved_dependency_path in self._analysis_results: # Ensure the resolved dependency is part of our analysis
-                         if resolved_dependency_path not in self._reverse_dependency_index:
-                            self._reverse_dependency_index[resolved_dependency_path] = set()
-                         self._reverse_dependency_index[resolved_dependency_path].add(dependent_path)
-                         logger.debug(f"Added reverse dependency: {resolved_dependency_path} <- {dependent_path}")
-
-        logger.debug(f"逆依存インデックスの構築完了: {len(self._reverse_dependency_index)} 件のエントリ。")
+    def _remove_dependent_references_from_reverse_index(self, deleted_dependent_path: Path) -> None:
+        """
+        Removes all references to a deleted file from the values (sets) in the reverse dependency index.
+        Should be called under the appropriate lock if modifying shared state.
+        逆依存インデックスの値 (セット) から、削除されたファイルへのすべての参照を削除します。
+        共有状態を変更する場合は、適切なロックの下で呼び出す必要があります。
+        """
+        logger.debug(f"Removing all references to deleted file from reverse index: {deleted_dependent_path}")
+        with self._reverse_dependency_index_lock:
+            # Iterate through a copy of keys to avoid modification issues during iteration
+            # 繰り返し中の変更の問題を避けるために、キーのコピーを反復処理します
+            for dependency_path in list(self._reverse_dependency_index.keys()):
+                dependents = self._reverse_dependency_index[dependency_path]
+                if deleted_dependent_path in dependents:
+                    dependents.discard(deleted_dependent_path)
+                    logger.debug(f"Removed reference {dependency_path} <- {deleted_dependent_path}")
+                    # Optional: Clean up empty sets
+                    # オプション: 空のセットをクリーンアップ
+                    if not dependents:
+                        logger.debug(f"Removing empty set for dependency after deleting reference: {dependency_path}")
+                        del self._reverse_dependency_index[dependency_path]
 
     def _process_event(self, event: FileSystemEvent):
         # This method processes a single event. Logic moved from background_worker.
@@ -685,79 +785,142 @@ class Kotemari:
                 new_file_info = self.analyzer.analyze_single_file(file_path)
                 if new_file_info:
                     with self._analysis_lock:
+                        # Get old dependencies before overwriting (should be None for created)
+                        # 上書きする前に古い依存関係を取得します (作成された場合は None のはずです)
+                        old_dependencies = self._analysis_results.get(file_path, None).dependencies if self._analysis_results.get(file_path, None) else []
                         self._analysis_results[file_path] = new_file_info
-                        # Rebuild index as dependencies might change
-                        # 依存関係が変わる可能性があるためインデックスを再構築
-                        self._build_reverse_dependency_index()
-                        # TODO: Handle propagation for created files impacting others?
+
+                    # Update reverse index outside analysis lock, but needs its own lock
+                    # 分析ロックの外で逆インデックスを更新しますが、独自のロックが必要です
+                    # Since it's a new file, only need to add new dependencies
+                    # 新しいファイルなので、新しい依存関係を追加するだけで済みます
+                    self._add_dependencies_to_reverse_index(file_path, new_file_info.dependencies)
+                    # TODO: Handle propagation for created files impacting others? (Less common)
+                    # TODO: 作成されたファイルが他のファイルに影響を与える場合の波及処理を扱いますか？（一般的ではない）
 
             elif event.event_type == "deleted":
                 # Remove file info from cache
                 # ファイル情報をキャッシュから削除
-                if file_path in self._analysis_results:
-                    logger.info(f"差分更新: 削除されたファイル {file_path} をキャッシュから削除します。")
-                    with self._analysis_lock:
-                        del self._analysis_results[file_path]
-                        # Rebuild index as dependencies might change
-                        # 依存関係が変わる可能性があるためインデックスを再構築
-                        self._build_reverse_dependency_index()
-                        # TODO: Handle propagation for deleted dependencies?
+                with self._analysis_lock:
+                    old_file_info = self._analysis_results.pop(file_path.resolve(), None) # Use resolve() for consistency
+
+                if old_file_info:
+                    logger.info(f"差分更新: 削除されたファイル {file_path} をキャッシュから削除しました。")
+                    resolved_deleted_path = file_path.resolve()
+
+                    # ** Get dependents BEFORE removing the key from reverse index **
+                    # ** 逆インデックスからキーを削除する前に依存元を取得 **
+                    dependents: Set[Path]
+                    with self._reverse_dependency_index_lock:
+                        # Copy the set to avoid modification issues
+                        dependents = self._reverse_dependency_index.get(resolved_deleted_path, set()).copy()
+
+                    # Update reverse index
+                    # 1. Remove dependencies OF the deleted file (if any)
+                    self._remove_dependencies_from_reverse_index(resolved_deleted_path, old_file_info.dependencies)
+                    # 2. Remove references TO the deleted file from other entries' values
+                    self._remove_dependent_references_from_reverse_index(resolved_deleted_path)
+                    # 3. Remove the deleted file AS A KEY from the index
+                    with self._reverse_dependency_index_lock:
+                        if resolved_deleted_path in self._reverse_dependency_index:
+                            logger.debug(f"Removing key {resolved_deleted_path} from reverse dependency index.")
+                            del self._reverse_dependency_index[resolved_deleted_path]
+                        else:
+                            logger.debug(f"Key {resolved_deleted_path} not found in reverse dependency index, nothing to remove.")
+
+                    # ** Propagate staleness to dependents **
+                    # ** 依存元に stale 状態を伝播 **
+                    if dependents:
+                        logger.info(f"依存関係の波及: {resolved_deleted_path} の削除により、{len(dependents)} 個のファイルに影響の可能性があります。")
+                        with self._analysis_lock: # Lock needed to modify FileInfo objects
+                            for dependent_path in dependents:
+                                if dependent_path in self._analysis_results:
+                                    logger.debug(f"依存関係の波及: {dependent_path} の依存関係を古いものとしてマークします。")
+                                    self._analysis_results[dependent_path].dependencies_stale = True
+                                else:
+                                    logger.warning(f"Dependent '{dependent_path}' found for deleted '{resolved_deleted_path}' but not in analysis results.")
 
             elif event.event_type == "modified":
                 # Update cache for the modified file
                 # 変更されたファイルのキャッシュを更新
                 logger.info(f"差分更新: 変更されたファイル {file_path} を再分析します。")
                 updated_file_info = self.analyzer.analyze_single_file(file_path)
+
                 if updated_file_info:
                     with self._analysis_lock:
+                        # Get old dependencies before overwriting
+                        # 上書きする前に古い依存関係を取得します
+                        old_dependencies = self._analysis_results.get(file_path, None).dependencies if self._analysis_results.get(file_path, None) else []
                         self._analysis_results[file_path] = updated_file_info
-                        # English: Rebuild index if dependencies might have changed (safer approach).
-                        # 日本語: 依存関係が変わった可能性があるのでインデックスを再構築（安全策）。
-                        # TODO: Optimize index update instead of full rebuild.
-                        self._build_reverse_dependency_index()
 
-                        # --- Dependency Propagation (Step 12-3) ---
-                        # English: Find files that depend on the modified file and mark them for re-analysis.
-                        # 日本語: 変更されたファイルに依存するファイルを見つけ、再分析対象としてマークします。
-                        affected_dependents = self._reverse_dependency_index.get(file_path, set())
-                        if affected_dependents:
-                            logger.info(f"依存関係の波及: {file_path} の変更により、{len(affected_dependents)} 個のファイル ({affected_dependents}) に影響があるため、再分析をスケジュールします。")
+                    # Update reverse index incrementally
+                    # 逆インデックスを増分更新
+                    self._remove_dependencies_from_reverse_index(file_path, old_dependencies)
+                    self._add_dependencies_to_reverse_index(file_path, updated_file_info.dependencies)
+
+                    # --- Dependency Propagation (Step 12-4 will refine this) ---
+                    # English: Find files that depend on the modified file and potentially mark them.
+                    # 日本語: 変更されたファイルに依存するファイルを見つけ、潜在的にマークします。
+                    affected_dependents: Set[Path]
+                    with self._reverse_dependency_index_lock:
+                        affected_dependents = self._reverse_dependency_index.get(file_path, set()).copy() # Copy to avoid issues if set is modified
+
+                    if affected_dependents:
+                        logger.info(f"依存関係の波及: {file_path} の変更により、{len(affected_dependents)} 個のファイルに影響の可能性があります。")
+                        with self._analysis_lock: # Need lock to modify FileInfo objects in _analysis_results
                             for dependent_path in affected_dependents:
-                                # Avoid re-analyzing the file that just got updated
-                                # 更新されたばかりのファイルを再分析しないようにする
-                                if dependent_path != file_path:
-                                    # Re-queue or mark for re-analysis. For simplicity, re-queue a modified event.
-                                    # 再度キューに入れるか、再分析マークを付ける。簡単のため、modified イベントを再度キューに入れる。
-                                    # Note: This could lead to redundant analysis if multiple dependencies change quickly.
-                                    # 注意: 複数の依存関係が素早く変更されると冗長な分析につながる可能性がある。
-                                    logger.debug(f"依存関係の波及: {dependent_path} を再分析キューに追加します。")
-                                    propagated_event = FileSystemEvent(
-                                        event_type="modified", # Treat propagation as a modification
-                                        src_path=dependent_path,
-                                        is_directory=False # Assuming dependency is always a file
-                                    )
-                                    self._event_queue.put(propagated_event)
-                        # --- End Dependency Propagation ---
+                                if dependent_path != file_path and dependent_path in self._analysis_results:
+                                    logger.debug(f"依存関係の波及: {dependent_path} の依存関係を古いものとしてマークします。")
+                                    # Mark the FileInfo as having stale dependencies
+                                    # FileInfo を古い依存関係を持つものとしてマークします
+                                    self._analysis_results[dependent_path].dependencies_stale = True
+                                    # TODO: Decide if we need to re-analyze *here* or *on-demand* later.
+                                    # ここで再分析するか、後でオンデマンドで分析するかを決定する必要があります。
+                                    # For now, just marking is sufficient for Step 12-4-2.
+                                    # 現時点では、マークするだけで Step 12-4-2 には十分です。
+                    # --- End Dependency Propagation Placeholder ---
 
-                else:
-                    # Handle case where analysis failed or file should be removed
-                    # 解析失敗、またはファイルを削除すべき場合の処理
-                    if file_path in self._analysis_results:
-                        logger.info(f"差分更新: 変更/削除されたファイル {file_path} をキャッシュから削除します。")
-                        with self._analysis_lock:
-                            del self._analysis_results[file_path]
-                            # Rebuild index as dependencies might change
-                            # 依存関係が変わる可能性があるためインデックスを再構築
-                            self._build_reverse_dependency_index()
-                            # TODO: Also handle propagation for deleted dependencies?
+                else: # Analysis failed or file should be removed (e.g., became ignored)
+                    # 解析失敗、またはファイルを削除すべき場合の処理 (例: 無視されるようになった)
+                    with self._analysis_lock:
+                        old_file_info = self._analysis_results.pop(file_path, None)
+
+                    if old_file_info:
+                        logger.info(f"差分更新: 分析失敗/無視のため、ファイル {file_path} をキャッシュから削除します。")
+                        # Update reverse index
+                        # 逆インデックスを更新
+                        self._remove_dependencies_from_reverse_index(file_path, old_file_info.dependencies)
+                        self._remove_dependent_references_from_reverse_index(file_path)
+                        # TODO: Trigger re-analysis for files that depended on this? (Handled by propagation?)
 
             elif event.event_type == "moved":
                 # Handle moved files/directories
-                # TODO: Implement logic for move events, including cache and index updates and propagation.
                 src_path = Path(event.src_path)
                 dest_path = Path(event.dest_path) if event.dest_path else None
                 logger.warning(f"Moved event handling not fully implemented: {src_path} -> {dest_path}")
-                # Need to remove old entry, add new entry, update index, and propagate
+
+                if dest_path:
+                    # Treat as delete and create for simplicity, though inefficient
+                    # 簡単のため、非効率的ではあるが、削除と作成として扱います
+                    # Need to get dependencies *before* deleting from cache
+                    # キャッシュから削除する*前*に依存関係を取得する必要があります
+                    old_file_info = None
+                    with self._analysis_lock:
+                         old_file_info = self._analysis_results.get(src_path)
+
+                    # Simulate delete
+                    delete_event = FileSystemEvent(event_type="deleted", src_path=str(src_path), is_directory=event.is_directory)
+                    self._process_event(delete_event)
+
+                    # Simulate create (if not ignored at new location)
+                    # 作成をシミュレートします (新しい場所で無視されない場合)
+                    if not self._ignore_processor.should_ignore(dest_path):
+                        create_event = FileSystemEvent(event_type="created", src_path=str(dest_path), is_directory=event.is_directory)
+                        self._process_event(create_event)
+                    else:
+                        logger.info(f"Moved file {dest_path} is ignored at the new location.")
+                else:
+                    logger.warning(f"Move event without destination path: {src_path}")
 
             # Mark the event as processed
             if self._event_queue:

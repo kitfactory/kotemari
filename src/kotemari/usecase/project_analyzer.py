@@ -147,4 +147,85 @@ class ProjectAnalyzer:
             raise AnalysisError(f"An unexpected error occurred during analysis: {e}") from e
 
         logger.info(f"Analysis complete. Found {len(analyzed_files)} non-ignored files.")
-        return analyzed_files 
+        return analyzed_files
+
+    def analyze_single_file(self, file_path: Path) -> Optional[FileInfo]:
+        """
+        Analyzes a single file: checks if ignored, gets metadata, calculates hash,
+        detects language, and extracts dependencies (for Python).
+        単一ファイルを分析します: 無視されるかどうかを確認し、メタデータを取得し、ハッシュを計算し、
+        言語を検出し、依存関係を抽出します（Python の場合）。
+
+        Args:
+            file_path (Path): The absolute path to the file to analyze.
+                              分析するファイルへの絶対パス。
+
+        Returns:
+            Optional[FileInfo]: A FileInfo object if the file is valid and analyzed,
+                                or None if the file is ignored, does not exist, or analysis fails.
+                                ファイルが有効で分析された場合は FileInfo オブジェクト、
+                                ファイルが無視される、存在しない、または分析が失敗した場合は None。
+        """
+        logger.debug(f"Analyzing single file: {file_path}")
+
+        # Ensure the input path is absolute
+        # 入力パスが絶対パスであることを確認します
+        absolute_file_path = file_path.resolve()
+
+        # 1. Check if ignored
+        # 1. 無視されるか確認
+        if self.ignore_processor.should_ignore(absolute_file_path):
+            logger.debug(f"File is ignored: {absolute_file_path}")
+            return None
+
+        # 2. Get basic file metadata (mtime, size)
+        # 2. 基本的なファイルメタデータを取得 (mtime, size)
+        try:
+            file_info = self.fs_accessor.get_file_info(absolute_file_path)
+            if file_info is None: # File might not exist or be accessible
+                logger.warning(f"Could not get basic info for file (may not exist or inaccessible): {absolute_file_path}")
+                return None
+        except FileSystemError as e:
+            logger.error(f"Error getting metadata for {absolute_file_path}: {e}", exc_info=True)
+            return None
+
+        # 3. Calculate hash
+        # 3. ハッシュを計算
+        try:
+            file_hash = self.hash_calculator.calculate_file_hash(file_info.path)
+            file_info.hash = file_hash
+        except Exception as e:
+            logger.warning(f"Could not calculate hash for {file_info.path}: {e}")
+            file_info.hash = None # Ensure hash is None on error
+
+        # 4. Detect language
+        # 4. 言語を検出
+        try:
+            language = self.language_detector.detect_language(file_info.path)
+            file_info.language = language
+            logger.debug(f"Language for {file_info.path.name}: {language}")
+        except Exception as e:
+            logger.warning(f"Could not detect language for {file_info.path}: {e}")
+            file_info.language = None # Ensure language is None on error
+
+        # 5. Extract dependencies (Python)
+        # 5. 依存関係を抽出 (Python)
+        file_info.dependencies = [] # Initialize/clear dependencies
+        file_info.dependencies_stale = False # Reset stale flag
+        if file_info.language == 'Python':
+            try:
+                content = self.fs_accessor.read_file(file_info.path)
+                if content is not None:
+                    dependencies = self.ast_parser.parse_dependencies(content, file_info.path)
+                    file_info.dependencies = dependencies
+                    logger.debug(f"Found {len(dependencies)} dependencies in {file_info.path.name}")
+                else:
+                     logger.warning(f"Could not read content of {file_info.path} to parse dependencies.")
+            except SyntaxError:
+                logger.warning(f"Skipping dependency parsing for {file_info.path.name} due to syntax errors.")
+            except Exception as e:
+                logger.error(f"Unexpected error parsing dependencies for {file_info.path}: {e}", exc_info=True)
+                # Keep dependencies empty
+
+        logger.debug(f"Successfully analyzed single file: {absolute_file_path}")
+        return file_info 

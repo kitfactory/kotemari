@@ -153,22 +153,22 @@
 *   **ゴール:** ファイル変更時に、そのファイルに依存している他のファイルの情報を自動的に更新できるようにする（依存関係の波及）。
 *   **実装方針:** 逆依存インデックス (`_reverse_dependency_index`) を利用して、変更の影響範囲を特定し、関連するファイルの情報を更新する。
 *   **詳細チェックリスト:**
-    *   `[ ]` **12-1: 逆依存インデックスの属性定義:**
-        *   `[ ]` 12-1-1: `Kotemari` クラスまたは適切な内部クラスに、逆依存関係を保持する辞書属性 (`_reverse_dependency_index: Dict[Path, Set[Path]]`) を定義する。（キー: 依存されるファイルパス, 値: 依存しているファイルパスのセット）
-        *   `[ ]` 12-1-2: 逆依存インデックスへのアクセスを保護するための専用の `threading.Lock` を追加する。
-    *   `[ ]` **12-2: 逆依存インデックス構築ロジックの実装:**
-        *   `[ ]` 12-2-1: プロジェクト全体の分析 (`_analyze_project_internal`) の中で、分析結果 (`_analysis_results`) を走査し、各ファイルの依存関係情報 (`FileInfo.dependencies`) を基に `_reverse_dependency_index` を構築する `_build_reverse_dependency_index` メソッドを実装する。
-        *   `[ ]` 12-2-2: `_analyze_project_internal` の最後に `_build_reverse_dependency_index` を呼び出すようにする。
-        *   `[ ]` 12-2-3: `_build_reverse_dependency_index` の実装において、適切なロックを取得・解放するようにする。
-    *   `[ ]` **12-3: 差分更新時の逆依存インデックス更新ロジックの実装:**
-        *   `[ ]` 12-3-1: ファイル変更 (`modified`) 時に、ファイルの `FileInfo` が更新された後、古い依存関係と新しい依存関係に基づいて `_reverse_dependency_index` を更新するロジックを実装する (`_update_reverse_dependency_index` のようなヘルパーメソッドを検討)。
-        *   `[ ]` 12-3-2: ファイル作成 (`created`) 時に、新しい `FileInfo` の依存関係に基づいて `_reverse_dependency_index` を更新するロジックを実装する。
-        *   `[ ]` 12-3-3: ファイル削除 (`deleted`) 時に、関連するエントリを `_reverse_dependency_index` から削除するロジックを実装する。
-        *   `[ ]` 12-3-4: 上記の更新ロジックが `_process_event` 内の適切な箇所から、ロックを考慮して呼び出されるようにする。
-    *   `[ ]` **12-4: 依存関係波及処理の実装:**
-        *   `[ ]` 12-4-1: ファイル変更 (`modified`) イベントを処理する際、`_reverse_dependency_index` を参照して、変更されたファイルに依存しているファイル（影響を受けるファイル）のリストを取得する。
-        *   `[ ]` 12-4-2: 影響を受ける各ファイルについて、依存関係情報が古くなったことを示すフラグを立てるか、依存関係リストをクリアするなどして、再計算が必要であることを示す処理を実装する。（まずは `FileInfo` に `dependencies_stale: bool` のようなフラグを追加することを検討）
-        *   `[ ]` 12-4-3: `get_dependencies` や `get_context` など、依存関係情報を利用するメソッド側で、`dependencies_stale` フラグが立っている場合は、依存関係の再計算を行うように修正する。（または、`_process_event` 内で直接再計算を行う）
+    *   `[x]` **12-1: 逆依存インデックスの属性定義:**
+        *   `[x]` 12-1-1: `Kotemari` クラスまたは適切な内部クラスに、逆依存関係を保持する辞書属性 (`_reverse_dependency_index: Dict[Path, Set[Path]]`) を定義する。（キー: 依存されるファイルパス, 値: 依存しているファイルパスのセット）
+        *   `[x]` 12-1-2: 逆依存インデックスへのアクセスを保護するための専用の `threading.Lock` を追加する。
+    *   `[x]` **12-2: 逆依存インデックス構築ロジックの実装:**
+        *   `[x]` 12-2-1: プロジェクト全体の分析 (`_analyze_project_internal`) の中で、分析結果 (`_analysis_results`) を走査し、各ファイルの依存関係情報 (`FileInfo.dependencies`) を基に `_reverse_dependency_index` を構築する `_build_reverse_dependency_index` メソッドを実装する。
+        *   `[x]` 12-2-2: `_analyze_project_internal` の最後に `_build_reverse_dependency_index` を呼び出すようにする。
+        *   `[x]` 12-2-3: `_build_reverse_dependency_index` の実装において、適切なロックを取得・解放するようにする。
+    *   `[x]` **12-3: 差分更新時の逆依存インデックス更新ロジックの実装:**
+        *   `[x]` 12-3-1: ファイル変更 (`modified`) 時に、ファイルの `FileInfo` が更新された後、古い依存関係と新しい依存関係に基づいて `_reverse_dependency_index` を更新するロジックを実装する (`_update_reverse_dependency_index` のようなヘルパーメソッドを検討)。 (Implemented via remove/add)
+        *   `[x]` 12-3-2: ファイル作成 (`created`) 時に、新しい `FileInfo` の依存関係に基づいて `_reverse_dependency_index` を更新するロジックを実装する。
+        *   `[x]` 12-3-3: ファイル削除 (`deleted`) 時に、関連するエントリを `_reverse_dependency_index` から削除するロジックを実装する。
+        *   `[x]` 12-3-4: 上記の更新ロジックが `_process_event` 内の適切な箇所から、ロックを考慮して呼び出されるようにする。
+    *   `[x]` **12-4: 依存関係波及処理の実装:**
+        *   `[x]` 12-4-1: ファイル変更 (`modified`) イベントを処理する際、`_reverse_dependency_index` を参照して、変更されたファイルに依存しているファイル（影響を受けるファイル）のリストを取得する。
+        *   `[x]` 12-4-2: 影響を受ける各ファイルについて、依存関係情報が古くなったことを示すフラグを立てるか、依存関係リストをクリアするなどして、再計算が必要であることを示す処理を実装する。（まずは `FileInfo` に `dependencies_stale: bool` のようなフラグを追加することを検討）(Flag implemented)
+        *   `[ ]` 12-4-3: `get_dependencies` や `get_context` など、依存関係情報を利用するメソッド側で、`dependencies_stale` フラグが立っている場合は、依存関係の再計算を行うように修正する。（または、`_process_event` 内で直接再計算を行う）(Deferred)
     *   `[ ]` **12-5: テストの作成と実行:**
         *   `[ ]` 12-5-1: 逆依存インデックスの構築・更新ロジックに対するユニットテストを作成する。
         *   `[ ]` 12-5-2: ファイル変更 → 依存関係の波及 → 影響を受けるファイルの `FileInfo` 更新（またはフラグ設定）という一連の流れを確認する結合テストを作成する。

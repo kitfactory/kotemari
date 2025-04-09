@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional
+from pathlib import Path
 
 class DependencyType(Enum):
     """
@@ -34,13 +35,16 @@ class DependencyInfo:
                相対インポートのレベル（INTERNAL_RELATIVE のみ、例: '.' は 1, '..' は 2）。それ以外は None。
         resolved_name: The potentially resolved name or suffix for sorting/grouping.
                        ソート/グルーピング用の解決された可能性のある名前または接尾辞。
+        resolved_path: The absolute path to the resolved dependency file (for internal dependencies).
+                       解決された依存関係ファイルの絶対パス（内部依存関係の場合）。
     """
     dependency_type: DependencyType = field()  # Required dependency type
     resolved_name: str = field()         # The resolved dependency name
     module_name: str = field()           # The original module name
     level: int | None = field(default=None)  # Optional level, default is None
+    resolved_path: Optional[Path] = field(default=None)
 
-    def __init__(self, name: Optional[str] = None, *, dependency_type: DependencyType = DependencyType.EXTERNAL, resolved_name: Optional[str] = None, module_name: Optional[str] = None, level: Optional[int] = None):
+    def __init__(self, name: Optional[str] = None, *, dependency_type: DependencyType = DependencyType.EXTERNAL, resolved_name: Optional[str] = None, module_name: Optional[str] = None, level: Optional[int] = None, resolved_path: Optional[Path] = None):
         # Custom initializer supporting shorthand creation.
         # English: If 'name' is not provided, use the value of the 'module_name' keyword argument.
         # 日本語: 'name' が提供されない場合、module_name キーワード引数の値を使用します。
@@ -55,11 +59,11 @@ class DependencyInfo:
         if module_name is None:
             module_name = name
 
-        self.name = name
         self.dependency_type = dependency_type
         self.resolved_name = resolved_name
         self.module_name = module_name
         self.level = level
+        self.resolved_path = resolved_path
 
     def __lt__(self, other):
         # English: Define less-than for sorting based on module_name

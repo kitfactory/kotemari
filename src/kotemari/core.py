@@ -1,15 +1,16 @@
 from pathlib import Path
-from typing import List, Optional, Callable, Union, Dict
+from typing import List, Optional, Callable, Union, Dict, Set
 import logging
 import datetime
 import hashlib
 import importlib.metadata
 import threading
 import queue
+import sys # Add sys for stderr output
 
 from .domain.file_info import FileInfo
 from .domain.file_system_event import FileSystemEvent
-from .domain.dependency_info import DependencyInfo
+from .domain.dependency_info import DependencyInfo, DependencyType
 from .utility.path_resolver import PathResolver
 from .usecase.project_analyzer import ProjectAnalyzer
 from .usecase.config_manager import ConfigManager
@@ -79,7 +80,13 @@ class Kotemari:
         """
         # --- Core Components Initialization ---
         self._path_resolver = PathResolver()
-        self._project_root: Path = self._path_resolver.resolve_absolute(project_root)
+        # Use a private variable for storing the resolved project root
+        # 解決済みのプロジェクトルートを格納するためにプライベート変数を使用
+        self._project_root: Path = project_root.resolve()
+
+        # Debug print to stderr
+        print(f"Kotemari.__init__: Initializing for {self._project_root}", file=sys.stderr)
+
         self._config_path: Optional[Path] = None
         if config_path:
             self._config_path = self._path_resolver.resolve_absolute(config_path, base_dir=self._project_root)
@@ -90,7 +97,7 @@ class Kotemari:
         # --- Service and Gateway Instances ---
         self._file_accessor = FileSystemAccessor(self._path_resolver)
         self._gitignore_reader = GitignoreReader(self._project_root)
-        self._ignore_processor = IgnoreRuleProcessor(self.project_root, self._config, self._path_resolver)
+        self._ignore_processor = IgnoreRuleProcessor(self._project_root, self._config, self._path_resolver)
         self._hash_calculator = HashCalculator()
         self._language_detector = LanguageDetector()
         self._ast_parser = AstParser()
@@ -109,7 +116,8 @@ class Kotemari:
         )
 
         # --- In-Memory Cache Initialization (Step 11-1-2 & 11-1-3) ---
-        self._analysis_results: Optional[List[FileInfo]] = None
+        self._analysis_results: Dict[Path, FileInfo] = {}
+        self._reverse_dependency_index: Dict[Path, Set[Path]] = {}
         self.project_analyzed: bool = False
         self._analysis_lock = threading.Lock() # Lock for accessing/modifying analysis results
 
@@ -129,21 +137,9 @@ class Kotemari:
             formatter=self._formatter
         )
 
-        self.cache_file_path = Path(".kotemari") / "analysis_cache.pkl"
-
-        # --- Try loading from cache first (Step 11-1-7) ---
-        logger.info("Attempting to load analysis results from cache...")
-        cached_data = self._file_accessor.read_pickle(self.cache_file_path, self.project_root)
-        if cached_data is not None and isinstance(cached_data, list): # Basic validation
-             # TODO: Add more robust cache validation (e.g., based on config changes, schema version)
-             logger.info(f"Successfully loaded {len(cached_data)} items from cache: {self.project_root / self.cache_file_path}")
-             with self._analysis_lock:
-                 self._analysis_results = cached_data
-                 self.project_analyzed = True
-        else:
-             logger.info("Cache not found or invalid. Performing initial project analysis...")
-             # --- Perform initial analysis (Step 11-1-2 cont.) ---
-             self._run_analysis_and_update_memory() # Perform initial full analysis
+        # --- Perform initial analysis (Step 11-1-2 cont.) ---
+        logger.info("Performing initial project analysis...")
+        self._run_analysis_and_update_memory() # Perform initial full analysis
 
     @property
     def project_root(self) -> Path:
@@ -151,6 +147,8 @@ class Kotemari:
         Returns the absolute path to the project root directory.
         プロジェクトルートディレクトリへの絶対パスを返します。
         """
+        # Return the private variable
+        # プライベート変数を返す
         return self._project_root
 
     def _run_analysis_and_update_memory(self):
@@ -159,19 +157,23 @@ class Kotemari:
         with self._analysis_lock:
             logger.info("Running full project analysis...")
             try:
-                self._analysis_results = self.analyzer.analyze()
+                # English: Analyze the project to get a list of FileInfo objects.
+                # 日本語: プロジェクトを分析して FileInfo オブジェクトのリストを取得します。
+                analysis_list: list[FileInfo] = self.analyzer.analyze()
+
+                # English: Convert the list to a dictionary keyed by path for efficient lookup.
+                # 日本語: 効率的な検索のために、リストをパスをキーとする辞書に変換します。
+                new_results: Dict[Path, FileInfo] = {fi.path: fi for fi in analysis_list}
+
+                # English: Update the in-memory cache with the new dictionary results.
+                # 日本語: 新しい辞書の結果でメモリ内キャッシュを更新します。
+                self._analysis_results = new_results
+                self._build_reverse_dependency_index()
                 self.project_analyzed = True
                 logger.info(f"Initial analysis complete. Found {len(self._analysis_results)} files.")
-                # --- Save results to cache (Step 11-1-7) ---
-                if self._analysis_results is not None:
-                    try:
-                        self._file_accessor.write_pickle(self._analysis_results, self.cache_file_path, self.project_root)
-                        logger.info(f"Analysis results saved to cache: {self.project_root / self.cache_file_path}")
-                    except IOError as e:
-                        logger.warning(f"Failed to save analysis results to cache: {e}")
             except Exception as e:
                 logger.error(f"Initial project analysis failed: {e}", exc_info=True)
-                self._analysis_results = None # Ensure cache is cleared on error
+                self._analysis_results = {} # Ensure cache is cleared on error
                 self.project_analyzed = False
                 # Optionally re-raise or handle differently?
             logger.debug("Released analysis lock after full analysis.")
@@ -200,6 +202,9 @@ class Kotemari:
             logger.info("Forcing re-analysis...")
             self._run_analysis_and_update_memory() # Run full analysis
 
+        # Debug print to stderr
+        print(f"Kotemari.analyze_project: Starting analysis for {self._project_root}", file=sys.stderr)
+
         logger.debug("Acquiring analysis lock to read results...")
         with self._analysis_lock:
             logger.debug("Acquired analysis lock.")
@@ -210,7 +215,7 @@ class Kotemari:
             # Return a copy to prevent external modification?
             # 外部からの変更を防ぐためにコピーを返しますか？
             # For now, return direct reference for performance.
-            return self._analysis_results # Return reference to in-memory list
+            return list(self._analysis_results.values()) # Return reference to in-memory list
 
     def list_files(self, relative: bool = True) -> List[str]:
         """
@@ -391,8 +396,8 @@ class Kotemari:
 
         # Create a quick lookup map from the analysis results
         # 分析結果からクイックルックアップマップを作成します
-        analyzed_paths: Dict[Path, FileInfo] = {f.path: f for f in self._analysis_results}
-        # logger.debug(f\"Context: Analyzed path keys: {list(analyzed_paths.keys())}\") # DEBUG LOGGING REMOVED
+        # analyzed_paths: Dict[Path, FileInfo] = {f.path: f for f in self._analysis_results} # This line is incorrect and removed.
+        # logger.debug(f"Context: Analyzed path keys: {list(analyzed_paths.keys())}") # DEBUG LOGGING REMOVED
 
         valid_target_paths: List[Path] = []
         potential_errors: List[str] = []
@@ -415,7 +420,9 @@ class Kotemari:
         for file_path_str, absolute_path in resolved_paths_map.items():
              # Check if the resolved path exists in our analyzed files map
              # 解決されたパスが分析済みファイルマップに存在するか確認します
-            if absolute_path not in analyzed_paths:
+             # Use self._analysis_results directly
+             # self._analysis_results を直接使用します
+            if absolute_path not in self._analysis_results:
                 # print(f"DEBUG Kotemari.get_context: Path check FAILED for {repr(absolute_path)}. Analyzed keys: {[repr(p) for p in analyzed_paths.keys()]}") # TEMP DEBUG PRINT
                 error_msg = (
                     f"File '{absolute_path}' (from input '{file_path_str}') was not found in the project analysis results. "
@@ -488,129 +495,45 @@ class Kotemari:
         def background_worker():
             logger.info("Background analysis worker started.")
             while not self._stop_worker_event.is_set():
-                event: Optional[FileSystemEvent] = None # Initialize event
                 try:
                     # Wait for an event with a timeout to allow checking the stop signal
-                    # タイムアウト付きでイベントを待機し、停止シグナルを確認できるようにします
-                    event = self._event_queue.get(timeout=1.0)
+                    event: Optional[FileSystemEvent] = self._event_queue.get(timeout=1.0)
 
-                    if event is None: # Sentinel value to stop the worker
-                        logger.debug("[Worker] Received stop signal (sentinel).")
-                        break
+                    # English: Check for the sentinel value to stop the worker.
+                    # 日本語: ワーカーを停止させるための番兵値を確認します。
+                    if event is None:
+                        logger.debug("[Worker] Received stop sentinel.")
+                        break # Exit the loop
 
                     logger.info(f"[Worker] Processing event: {event}")
 
-                    # Resolve path and check if ignored BEFORE checking event type
-                    # イベントタイプを確認する前にパスを解決し、無視されるかどうかを確認します
-                    absolute_path = Path(event.src_path).resolve()
-                    if self._ignore_processor.is_ignored(absolute_path):
-                        logger.debug(f"[Worker] Ignoring event for path: {absolute_path}")
-                        self._event_queue.task_done()
-                        continue # Skip ignored paths
+                    # English: Process the event using the dedicated method.
+                    # 日本語: 専用メソッドを使用してイベントを処理します。
+                    self._process_event(event)
 
-                    # --- Differential Update Logic (Step 11-2-1) ---
-                    event_processed_differentially = False
-                    if not event.is_directory: # Only process file events differentially for now
-                        # Ensure thread-safe access to analysis results
-                        # 分析結果へのスレッドセーフなアクセスを保証します
-                        with self._analysis_lock:
-                            if event.event_type == EVENT_TYPE_CREATED:
-                                try:
-                                    logger.info(f"[Worker] Analyzing created file: {absolute_path}")
-                                    # Analyze the single created file
-                                    # 作成された単一ファイルを分析します
-                                    new_file_info_list = self.analyzer.analyze([absolute_path]) # Analyze only the new file
-                                    if new_file_info_list:
-                                        new_file_info = new_file_info_list[0]
-                                        # Update the in-memory cache
-                                        # メモリ内キャッシュを更新します
-                                        # Remove existing entry if any (e.g., if created shortly after deletion)
-                                        # 既存のエントリがあれば削除します（例：削除直後に作成された場合）
-                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
-                                        self._analysis_results.append(new_file_info)
-                                        logger.info(f"[Worker] Added/Updated analysis for {absolute_path} in memory cache.")
-                                        self.project_analyzed = True # Mark as analyzed if not already
-                                    else:
-                                         logger.warning(f"[Worker] Analysis of created file {absolute_path} returned no info (possibly empty or fully ignored content).")
-                                    event_processed_differentially = True
-                                except Exception as e:
-                                    logger.error(f"[Worker] Error analyzing created file {absolute_path}: {e}", exc_info=True)
-                                    # Fallback handled below
+                    # English: Task is marked done inside _process_event now.
+                    # 日本語: タスクは _process_event 内で完了マークが付けられるようになりました。
+                    # self._event_queue.task_done() # Removed from here
 
-                            elif event.event_type == EVENT_TYPE_DELETED:
-                                logger.info(f"[Worker] Removing deleted file from cache: {absolute_path}")
-                                initial_count = len(self._analysis_results)
-                                # Remove the FileInfo corresponding to the deleted file path
-                                # 削除されたファイルパスに対応する FileInfo を削除します
-                                self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
-                                final_count = len(self._analysis_results)
-                                if final_count < initial_count:
-                                    logger.info(f"[Worker] Removed analysis for {absolute_path} from memory cache.")
-                                else:
-                                    logger.warning(f"[Worker] Deleted file {absolute_path} was not found in memory cache.")
-                                event_processed_differentially = True
-                                # No need to trigger full analysis if file wasn't tracked
-                                # ファイルが追跡されていなかった場合、完全な分析をトリガーする必要はありません
-
-                            elif event.event_type == EVENT_TYPE_MODIFIED: # (Step 11-2-2)
-                                try:
-                                    logger.info(f"[Worker] Re-analyzing modified file: {absolute_path}")
-                                    # Re-analyze the single modified file
-                                    # 変更された単一ファイルを再分析します
-                                    modified_file_info_list = self.analyzer.analyze([absolute_path])
-                                    if modified_file_info_list:
-                                        modified_file_info = modified_file_info_list[0]
-                                        # Update the in-memory cache by replacing the old entry
-                                        # 古いエントリを置き換えてメモリ内キャッシュを更新します
-                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
-                                        self._analysis_results.append(modified_file_info)
-                                        logger.info(f"[Worker] Updated analysis for {absolute_path} in memory cache.")
-                                    else:
-                                        # If analysis returns nothing (e.g., file became empty or fully ignored), remove it
-                                        # 分析が何も返さない場合（例：ファイルが空になったか完全に無視されるようになった）、削除します
-                                        logger.warning(f"[Worker] Re-analysis of {absolute_path} returned no info. Removing from cache.")
-                                        self._analysis_results = [fi for fi in self._analysis_results if fi.path != absolute_path]
-                                    event_processed_differentially = True
-                                except Exception as e:
-                                     logger.error(f"[Worker] Error re-analyzing modified file {absolute_path}: {e}", exc_info=True)
-                                     # Fallback handled below
-
-                    # --- Fallback to Full Re-analysis ---
-                    # If the event wasn't handled differentially (e.g., MOVED, directory event, or error during diff update)
-                    # イベントが差分的に処理されなかった場合（例：移動、ディレクトリイベント、差分更新中のエラー）
-                    if not event_processed_differentially:
-                        # Log the specific event type that triggers the fallback
-                        # フォールバックをトリガーする特定のイベントタイプをログに記録します
-                        trigger_reason = f"event type '{event.event_type}'" if hasattr(event, 'event_type') else "unknown event or error"
-                        if event and event.is_directory:
-                            trigger_reason += " (directory event)"
-                        elif not event_processed_differentially:
-                            trigger_reason += " (error during differential update or unhandled file event)"
-
-                        logger.info(f"[Worker] {trigger_reason.capitalize()} triggers full re-analysis.")
-                        self._run_analysis_and_update_memory() # This handles locking internally
-                        logger.info("[Worker] Background full re-analysis complete.")
-                    # ---------------------------------------------------- #
-
-                    self._event_queue.task_done()
                 except queue.Empty:
                     # Timeout reached, loop again to check stop signal
-                    # タイムアウトに達しました。再度ループして停止シグナルを確認します
                     continue
                 except Exception as e:
-                    # Catch potential errors resolving path or other unexpected issues
-                    # パス解決中の潜在的なエラーやその他の予期しない問題をキャッチします
-                    event_path = event.src_path if event else "N/A"
-                    logger.error(f"[Worker] Error processing event for path '{event_path}': {e}", exc_info=True)
-                    # Avoid getting stuck in a loop; mark task as done if possible
-                    # ループに陥るのを避けます。可能であればタスクを完了としてマークします
-                    try:
-                        if self._event_queue and not self._event_queue.empty(): # Check if queue exists and is not empty
-                             self._event_queue.task_done()
-                    except Exception as qe:
-                         logger.error(f"[Worker] Error marking task done after outer exception: {qe}")
+                    logger.error(f"[Worker] Error processing event queue: {e}", exc_info=True)
+                    # How to handle errors? Continue? Stop? Maybe mark task done if it wasn't?
+                    # エラーをどう処理しますか？続行しますか？停止しますか？ もしそうでなければタスクを完了としてマークしますか？
+                    # Ensure task_done is called even on unexpected errors in the loop itself
+                    # ループ自体で予期しないエラーが発生した場合でも task_done が呼び出されるようにします
+                    # This might be redundant if _process_event handles its errors and calls task_done.
+                    # _process_event がエラーを処理して task_done を呼び出す場合、これは冗長になる可能性があります。
+                    # Consider carefully if this is needed.
+                    # これが必要かどうか慎重に検討してください。
+                    # if self._event_queue:
+                    #     try:
+                    #         self._event_queue.task_done()
+                    #     except ValueError:
+                    #         pass # Ignore if task_done() called more times than tasks
             logger.info("Background analysis worker stopped.")
-        # --- End of background worker thread --- # (Make sure this marker helps identify the end)
 
         # Initialize and start the monitor
         self._event_monitor = FileSystemEventMonitor(
@@ -656,3 +579,195 @@ class Kotemari:
         self._event_queue = None
         self._background_worker_thread = None
         logger.info("File system monitor and background worker stopped.")
+
+    # English comment:
+    # Build the reverse dependency index from the current analysis results.
+    # This method should be called within the lock.
+    # 日本語コメント:
+    # 現在の解析結果から逆依存インデックスを構築します。
+    # このメソッドはロック内で呼び出す必要があります。
+    def _build_reverse_dependency_index(self) -> None:
+        logger.debug("逆依存インデックスの構築を開始します。")
+        self._reverse_dependency_index.clear()
+        # English: Get the project root path once.
+        # 日本語: プロジェクトルートパスを一度取得します。
+        project_root = self.project_root
+
+        # English: Iterate through the analysis results dictionary (path: FileInfo).
+        # 日本語: 分析結果の辞書 (path: FileInfo) を反復処理します。
+        for dependent_path, file_info in self._analysis_results.items():
+            if file_info.dependencies:
+                for dep_info in file_info.dependencies:
+                    resolved_dependency_path: Optional[Path] = None
+                    # English: Process only internal dependencies for the reverse index.
+                    # 日本語: 逆インデックスのために内部依存関係のみを処理します。
+                    if dep_info.dependency_type in [DependencyType.INTERNAL_ABSOLUTE, DependencyType.INTERNAL_RELATIVE]:
+                        try:
+                            # English: Attempt to resolve the module name to an absolute path within the project.
+                            # 日本語: モジュール名をプロジェクト内の絶対パスに解決しようと試みます。
+                            # Note: This resolution might be complex depending on sys.path, __init__.py handling etc.
+                            # PathResolver might need enhancement or this logic refined.
+                            # 注意: この解決は sys.path、__init__.py の処理などによって複雑になる可能性があります。
+                            # PathResolver の強化またはこのロジックの改良が必要になる場合があります。
+
+                            # Use the directory of the *dependent* file as the base for relative imports
+                            # *依存元*ファイルのディレクトリを相対インポートの基点として使用します
+                            base_dir_for_resolve = dependent_path.parent
+
+                            # For relative imports, use level and module name
+                            # 相対インポートの場合、level とモジュール名を使用します
+                            if dep_info.dependency_type == DependencyType.INTERNAL_RELATIVE and dep_info.level is not None:
+                                # Simple relative path construction (may need refinement for packages)
+                                # 単純な相対パス構築（パッケージの場合は改良が必要な場合があります）
+                                relative_module_path_parts = dep_info.module_name.split('.')
+                                current_dir = base_dir_for_resolve
+                                for _ in range(dep_info.level -1): # Go up levels for '..'
+                                    current_dir = current_dir.parent
+
+                                potential_path_py = current_dir.joinpath(*relative_module_path_parts).with_suffix(".py")
+                                potential_path_init = current_dir.joinpath(*relative_module_path_parts, "__init__.py")
+
+                                if potential_path_py.exists() and potential_path_py.is_file():
+                                     resolved_dependency_path = potential_path_py.resolve()
+                                elif potential_path_init.exists() and potential_path_init.is_file():
+                                    resolved_dependency_path = potential_path_init.resolve()
+                                else:
+                                     logger.debug(f"Relative import '{dep_info.module_name}' from '{dependent_path}' could not be resolved to an existing file ({potential_path_py} or {potential_path_init}).")
+
+
+                            # For absolute imports, resolve relative to project root (or configured source roots)
+                            # 絶対インポートの場合、プロジェクトルート（または設定されたソースルート）からの相対パスで解決します
+                            elif dep_info.dependency_type == DependencyType.INTERNAL_ABSOLUTE:
+                                # Assume absolute imports are relative to project root for now
+                                # 現時点では、絶対インポートはプロジェクトルートからの相対パスであると仮定します
+                                module_path_parts = dep_info.module_name.split('.')
+                                potential_path_py = project_root.joinpath(*module_path_parts).with_suffix(".py")
+                                potential_path_init = project_root.joinpath(*module_path_parts, "__init__.py")
+
+                                if potential_path_py.exists() and potential_path_py.is_file():
+                                     resolved_dependency_path = potential_path_py.resolve()
+                                elif potential_path_init.exists() and potential_path_init.is_file():
+                                     resolved_dependency_path = potential_path_init.resolve()
+                                else:
+                                     logger.debug(f"Absolute import '{dep_info.module_name}' could not be resolved within project root ({potential_path_py} or {potential_path_init}).")
+
+                        except Exception as e:
+                             logger.warning(f"Error resolving path for dependency '{dep_info.module_name}' in file '{dependent_path}': {e}", exc_info=True)
+
+
+                    # English: If a path was successfully resolved, add it to the index.
+                    # 日本語: パスが正常に解決された場合は、インデックスに追加します。
+                    if resolved_dependency_path and resolved_dependency_path in self._analysis_results: # Ensure the resolved dependency is part of our analysis
+                         if resolved_dependency_path not in self._reverse_dependency_index:
+                            self._reverse_dependency_index[resolved_dependency_path] = set()
+                         self._reverse_dependency_index[resolved_dependency_path].add(dependent_path)
+                         logger.debug(f"Added reverse dependency: {resolved_dependency_path} <- {dependent_path}")
+
+        logger.debug(f"逆依存インデックスの構築完了: {len(self._reverse_dependency_index)} 件のエントリ。")
+
+    def _process_event(self, event: FileSystemEvent):
+        # This method processes a single event. Logic moved from background_worker.
+        # このメソッドは単一のイベントを処理します。ロジックは background_worker から移動しました。
+        try:
+            file_path = Path(event.src_path)
+            logger.debug(f"Processing event: type={event.event_type}, path={file_path}, is_dir={event.is_directory}")
+
+            # Ignore events based on config rules
+            # 設定ルールに基づいてイベントを無視
+            if self._ignore_processor.should_ignore(file_path):
+                logger.debug(f"Ignoring event for path: {file_path}")
+                return
+
+            if event.event_type == "created":
+                # Add new file info to cache
+                # 新しいファイル情報をキャッシュに追加
+                logger.info(f"差分更新: 作成されたファイル {file_path} を分析します。")
+                new_file_info = self.analyzer.analyze_single_file(file_path)
+                if new_file_info:
+                    with self._analysis_lock:
+                        self._analysis_results[file_path] = new_file_info
+                        # Rebuild index as dependencies might change
+                        # 依存関係が変わる可能性があるためインデックスを再構築
+                        self._build_reverse_dependency_index()
+                        # TODO: Handle propagation for created files impacting others?
+
+            elif event.event_type == "deleted":
+                # Remove file info from cache
+                # ファイル情報をキャッシュから削除
+                if file_path in self._analysis_results:
+                    logger.info(f"差分更新: 削除されたファイル {file_path} をキャッシュから削除します。")
+                    with self._analysis_lock:
+                        del self._analysis_results[file_path]
+                        # Rebuild index as dependencies might change
+                        # 依存関係が変わる可能性があるためインデックスを再構築
+                        self._build_reverse_dependency_index()
+                        # TODO: Handle propagation for deleted dependencies?
+
+            elif event.event_type == "modified":
+                # Update cache for the modified file
+                # 変更されたファイルのキャッシュを更新
+                logger.info(f"差分更新: 変更されたファイル {file_path} を再分析します。")
+                updated_file_info = self.analyzer.analyze_single_file(file_path)
+                if updated_file_info:
+                    with self._analysis_lock:
+                        self._analysis_results[file_path] = updated_file_info
+                        # English: Rebuild index if dependencies might have changed (safer approach).
+                        # 日本語: 依存関係が変わった可能性があるのでインデックスを再構築（安全策）。
+                        # TODO: Optimize index update instead of full rebuild.
+                        self._build_reverse_dependency_index()
+
+                        # --- Dependency Propagation (Step 12-3) ---
+                        # English: Find files that depend on the modified file and mark them for re-analysis.
+                        # 日本語: 変更されたファイルに依存するファイルを見つけ、再分析対象としてマークします。
+                        affected_dependents = self._reverse_dependency_index.get(file_path, set())
+                        if affected_dependents:
+                            logger.info(f"依存関係の波及: {file_path} の変更により、{len(affected_dependents)} 個のファイル ({affected_dependents}) に影響があるため、再分析をスケジュールします。")
+                            for dependent_path in affected_dependents:
+                                # Avoid re-analyzing the file that just got updated
+                                # 更新されたばかりのファイルを再分析しないようにする
+                                if dependent_path != file_path:
+                                    # Re-queue or mark for re-analysis. For simplicity, re-queue a modified event.
+                                    # 再度キューに入れるか、再分析マークを付ける。簡単のため、modified イベントを再度キューに入れる。
+                                    # Note: This could lead to redundant analysis if multiple dependencies change quickly.
+                                    # 注意: 複数の依存関係が素早く変更されると冗長な分析につながる可能性がある。
+                                    logger.debug(f"依存関係の波及: {dependent_path} を再分析キューに追加します。")
+                                    propagated_event = FileSystemEvent(
+                                        event_type="modified", # Treat propagation as a modification
+                                        src_path=dependent_path,
+                                        is_directory=False # Assuming dependency is always a file
+                                    )
+                                    self._event_queue.put(propagated_event)
+                        # --- End Dependency Propagation ---
+
+                else:
+                    # Handle case where analysis failed or file should be removed
+                    # 解析失敗、またはファイルを削除すべき場合の処理
+                    if file_path in self._analysis_results:
+                        logger.info(f"差分更新: 変更/削除されたファイル {file_path} をキャッシュから削除します。")
+                        with self._analysis_lock:
+                            del self._analysis_results[file_path]
+                            # Rebuild index as dependencies might change
+                            # 依存関係が変わる可能性があるためインデックスを再構築
+                            self._build_reverse_dependency_index()
+                            # TODO: Also handle propagation for deleted dependencies?
+
+            elif event.event_type == "moved":
+                # Handle moved files/directories
+                # TODO: Implement logic for move events, including cache and index updates and propagation.
+                src_path = Path(event.src_path)
+                dest_path = Path(event.dest_path) if event.dest_path else None
+                logger.warning(f"Moved event handling not fully implemented: {src_path} -> {dest_path}")
+                # Need to remove old entry, add new entry, update index, and propagate
+
+            # Mark the event as processed
+            if self._event_queue:
+                 self._event_queue.task_done()
+
+        except Exception as e:
+            logger.error(f"Error processing event {event}: {e}", exc_info=True)
+            # Ensure task_done is called even if an error occurs during processing
+            if self._event_queue:
+                 self._event_queue.task_done()
+
+    # English comment:
+    # Background worker thread target function.

@@ -50,6 +50,7 @@ VerboseType = Annotated[
 
 @app.command()
 def analyze(
+    ctx: typer.Context,
     project_root: Annotated[
         Path,
         typer.Argument(
@@ -73,10 +74,13 @@ def analyze(
         use_cache=use_cache
     )
     logger.info(f"Analyzing project at: {project_root}")
-    controller.analyze_and_display()
+    # Pass context to the analyze method
+    # analyze メソッドにコンテキストを渡す
+    controller.analyze(ctx)
 
 @app.command()
 def dependencies(
+    ctx: typer.Context,
     target_file: Annotated[Path, typer.Argument(help="Path to the Python file to get dependencies for.", 
                                                 exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True)],
     project_root: ProjectType = Path("."),
@@ -90,10 +94,11 @@ def dependencies(
 
     controller = CliController(project_root=str(project_root), config_path=str(config_path) if config_path else None)
     logger.info(f"Getting dependencies for: {target_file}")
-    controller.show_dependencies(str(target_file))
+    controller.show_dependencies(ctx, str(target_file))
 
 @app.command()
 def context(
+    ctx: typer.Context,
     target_files: Annotated[List[Path], typer.Argument(help="Paths to the target files to include in the context.",
                                                       exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True)], # Corrected type hint
     project_root: ProjectType = Path("."),
@@ -109,11 +114,12 @@ def context(
     controller = CliController(project_root=str(project_root), config_path=str(config_path) if config_path else None)
     logger.info(f"Generating context for: {', '.join(map(str, target_files))}")
     target_file_strs = [str(p) for p in target_files]
-    controller.generate_context(target_file_strs)
+    controller.generate_context(ctx, target_file_strs)
 
 # New CLI command to list files in the project directory
 @app.command("list")
 def list_cmd(
+    ctx: typer.Context,
     project_root: Annotated[
         str,
         typer.Argument(..., help="The root directory of the project to list files from.", show_default=False)
@@ -135,11 +141,13 @@ def list_cmd(
         project_path = project_path.resolve()
     config_file_path = Path(config) if config else None
     controller = CliController(project_path, config_file_path, use_cache)
-    controller.display_list()
+    logger.info(f"Listing files for: {project_path}")
+    controller.display_list(ctx)
 
 # New CLI command to display the tree structure of the project directory
 @app.command("tree")
 def tree_cmd(
+    ctx: typer.Context,
     project_root: Annotated[
         str,
         typer.Argument(..., help="The root directory of the project to display the tree for.", show_default=False)
@@ -161,7 +169,8 @@ def tree_cmd(
         project_path = project_path.resolve()
     config_file_path = Path(config) if config else None
     controller = CliController(project_path, config_file_path, use_cache)
-    controller.display_tree()
+    logger.info(f"Displaying tree for: {project_path}")
+    controller.display_tree(ctx)
 
 # --- Entry point for CLI --- 
 def main():

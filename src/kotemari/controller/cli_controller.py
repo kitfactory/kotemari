@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
 import sys
 import traceback
@@ -54,28 +54,44 @@ class CliController:
         self._kotemari_instance: Optional[Kotemari] = None
         self.console = Console()
 
-    def _get_kotemari_instance(self) -> Kotemari:
+    def _get_kotemari_instance(self, ctx: typer.Context) -> Kotemari:
         """Gets or initializes the Kotemari instance."""
-        if self._kotemari_instance is None:
+        project_path_str = ctx.params.get('project_root', '.')
+        config_path_str = ctx.params.get('config_path')
+        log_level_str = ctx.params.get('log_level', 'INFO')
+
+        # Convert project_root to Path object
+        # project_root を Path オブジェクトに変換
+        project_path = Path(project_path_str).resolve()
+        config_path = Path(config_path_str).resolve() if config_path_str else None
+
+        # Configure logging based on the log_level parameter
+        # log_level パラメータに基づいてロギングを設定
+        numeric_level = getattr(logging, log_level_str.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {log_level_str}')
+        logging.basicConfig(level=numeric_level, format='[%(levelname)s] %(message)s')
+
+        # Initialize Kotemari instance if not already done
+        # まだ初期化されていない場合は Kotemari インスタンスを初期化
+        if not self._kotemari_instance:
             try:
-                logger.debug(f"Initializing Kotemari for project: {self.project_root}, config: {self.config_path}")
                 self._kotemari_instance = Kotemari(
-                    project_root=self.project_root, 
-                    config_path=self.config_path
+                    project_root=project_path,
+                    config_path=config_path,
+                    log_level=numeric_level
                 )
-                logger.debug("Kotemari instance initialized successfully.")
             except Exception as e:
-                logger.exception(f"Failed to initialize Kotemari: {e}")
-                self.console.print(f"[bold red]Error:[/bold red] Failed to initialize project analysis: {e}")
+                logger.error(f"Failed to initialize Kotemari: {e}", exc_info=True)
                 raise typer.Exit(code=1)
         return self._kotemari_instance
 
-    def analyze_and_display(self):
+    def analyze(self, ctx: typer.Context):
         """
         Analyzes the project and displays a summary.
         プロジェクトを分析し、要約を表示します。
         """
-        instance = self._get_kotemari_instance()
+        instance = self._get_kotemari_instance(ctx)
         try:
             analyzed_files = instance.analyze_project(force_reanalyze=False)
             self._display_analysis_summary(analyzed_files)
@@ -95,7 +111,7 @@ class CliController:
         table.add_row("Total Files Analyzed", str(len(analyzed_files)))
         self.console.print(table)
 
-    def show_dependencies(self, target_file_path: str):
+    def show_dependencies(self, ctx: typer.Context, target_file_path: str):
         """
         Shows dependencies for a specific file.
         特定のファイルの依存関係を表示します。
@@ -103,7 +119,7 @@ class CliController:
             target_file_path: Path to the target file.
                              ターゲットファイルへのパス。
         """
-        instance = self._get_kotemari_instance()
+        instance = self._get_kotemari_instance(ctx)
         try:
             # Ensure analysis is done first, preferably using cache
             # まず分析が完了していることを確認します（できればキャッシュを使用）
@@ -157,7 +173,7 @@ class CliController:
             console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
 
-    def generate_context(self, target_file_paths: List[str]):
+    def generate_context(self, ctx: typer.Context, target_file_paths: List[str]):
         """
         Generates and prints the context string for the given files.
         指定されたファイルのコンテキスト文字列を生成して表示します。
@@ -165,7 +181,7 @@ class CliController:
             target_file_paths: List of paths to the target files.
                                ターゲットファイルへのパスのリスト。
         """
-        instance = self._get_kotemari_instance()
+        instance = self._get_kotemari_instance(ctx)
         try:
             # Ensure analysis is done
             instance.analyze_project()
@@ -191,91 +207,83 @@ class CliController:
             console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
 
-    def display_list(self):
+    def display_list(self, ctx: typer.Context):
         """Analyzes the project and displays the list of files (respecting ignores).
         プロジェクトを解析し、ファイルリスト（無視ルール適用後）を表示します。
         """
         try:
-            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project() # Ensure analysis is done
+            logger.debug("display_list: Getting analysis results...")
+            analyzed_files: list[FileInfo] = self._get_kotemari_instance(ctx).analyze_project()
+            logger.debug(f"display_list: Got {len(analyzed_files)} files.")
             if not analyzed_files:
                 self.console.print("No files found in the project (after applying ignore rules).")
                 return
 
             self.console.print("Files (respecting ignore rules):")
-            # Extract relative paths and sort them
-            # 相対パスを抽出し、ソートします
-            relative_paths = sorted([str(file_info.path.relative_to(self.project_root).as_posix()) for file_info in analyzed_files])
-            for path_str in relative_paths:
-                self.console.print(path_str)
-
-        except KotemariError as e:
-            self.console.print(f"[bold red]Error listing files:[/bold red] {e}")
-            raise typer.Exit(code=1)
+            for file_info in sorted(analyzed_files, key=lambda f: f.path):
+                relative_path = file_info.path.relative_to(self._get_kotemari_instance(ctx).project_root)
+                self.console.print(f"  {relative_path}")
+            logger.debug("display_list: Finished printing files.")
         except Exception as e:
-            self.console.print(f"[bold red]An unexpected error occurred while listing files:[/bold red] {e}")
-            self.console.print_exception(show_locals=True)
+            logger.error(f"Error during file listing: {e}", exc_info=True)
+            console.print(f"[bold red]An unexpected error occurred while listing files:[/bold red] {e}")
+            console.print_exception(show_locals=True)
             raise typer.Exit(code=1)
 
-    def display_tree(self):
+    def display_tree(self, ctx: typer.Context):
         """Analyzes the project and displays the file tree (respecting ignores).
         プロジェクトを解析し、ファイルツリー（無視ルール適用後）を表示します。
         """
         try:
-            # Ensure analysis is done
-            analyzed_files: list[FileInfo] = self._get_kotemari_instance().analyze_project()
+            logger.debug("display_tree: Getting analysis results...")
+            analyzed_files: list[FileInfo] = self._get_kotemari_instance(ctx).analyze_project()
+            logger.debug(f"display_tree: Got {len(analyzed_files)} files.")
             if not analyzed_files:
                 self.console.print("No files found to build tree (after applying ignore rules).")
                 return
 
-            # Remove icon from root label
-            tree = Tree(f"[link file://{self.project_root}]{self.project_root.name}")
+            # Build and display tree using rich
+            # rich を使用してツリーを構築および表示
+            project_root_instance = self._get_kotemari_instance(ctx).project_root # Get root path once
+            tree = Tree(f":open_file_folder: [bold blue]{project_root_instance.name}")
+            nodes: Dict[Path, Tree] = {project_root_instance: tree} # Map paths to Tree nodes
 
-            # Build a directory structure from the file paths
-            # ファイルパスからディレクトリ構造を構築します
-            structure: dict = {}
-            relative_paths = sorted([file_info.path.relative_to(self.project_root) for file_info in analyzed_files])
+            logger.debug("display_tree: Starting tree construction.")
+            # Sort files to ensure consistent tree structure
+            # 一貫したツリー構造を確保するためにファイルをソート
+            sorted_files = sorted(analyzed_files, key=lambda f: f.path)
 
-            for path in relative_paths:
-                current_level = structure
-                parts = path.parts
-                for i, part in enumerate(parts):
-                    if i == len(parts) - 1: # It's a file
-                        current_level[part] = None # Mark as file
-                    else: # It's a directory
-                        if part not in current_level:
-                            current_level[part] = {}
-                        current_level = current_level[part]
+            for file_info in sorted_files:
+                path = file_info.path
+                current_parent_path = project_root_instance
+                current_parent_node = tree
 
-            # Recursively build the rich Tree
-            # rich Tree を再帰的に構築します
-            def add_nodes(branch: Tree, structure_level: dict):
-                items = sorted(structure_level.items())
-                for i, (name, content) in enumerate(items):
-                    is_last = i == len(items) - 1
-                    style = "" if is_last else "dim"
-                    if content is None: # File
-                        # Remove icon from file node
-                        # ファイルノードからアイコンを削除
-                        branch.add(f"{name}", style=style)
-                    else: # Directory
-                        # Remove icon from directory node
-                        # ディレクトリノードからアイコンを削除
-                        new_branch = branch.add(f"{name}", style=style)
-                        add_nodes(new_branch, content)
+                # Iterate through parent directories relative to project root
+                # プロジェクトルートからの相対的な親ディレクトリを反復処理
+                relative_path = path.relative_to(project_root_instance)
+                for part in relative_path.parts[:-1]: # Iterate over directory parts
+                    current_child_path = current_parent_path / part
+                    # Find or create the node for this directory part
+                    # このディレクトリ部分のノードを見つけるか作成する
+                    child_node = nodes.get(current_child_path)
+                    if child_node is None:
+                        # logger.debug(f"Adding node for dir: {current_child_path}")
+                        child_node = current_parent_node.add(f":folder: {part}")
+                        nodes[current_child_path] = child_node
+                    current_parent_path = current_child_path
+                    current_parent_node = child_node
 
-            add_nodes(tree, structure)
+                # Add the file node to the correct parent directory node
+                # 正しい親ディレクトリノードにファイルノードを追加
+                # logger.debug(f"Adding node for file: {path.name} under {current_parent_path}")
+                current_parent_node.add(f":page_facing_up: {path.name}")
+
+            logger.debug("display_tree: Finished tree construction.")
             self.console.print(tree)
+            logger.debug("display_tree: Finished printing tree.")
 
-        except KotemariError as e:
-            # Use standard traceback printing to stderr for better capture by subprocess
-            # subprocess によるキャプチャ向上のため、標準の traceback を stderr に出力します
-            print(f"[bold red]Error displaying tree:[/bold red]", file=sys.stderr)
-            print(f"Exception Type: {type(e).__name__}", file=sys.stderr)
-            print(f"Exception Details: {e}", file=sys.stderr)
-            print("Traceback:", file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-            raise typer.Exit(code=1)
         except Exception as e:
+            logger.error(f"Error during tree display: {e}", exc_info=True)
             console = Console()
             console.print(f"[bold red]An unexpected error occurred while displaying tree:[/bold red] {e}")
             console.print_exception(show_locals=True)

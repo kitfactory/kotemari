@@ -83,11 +83,12 @@ def run_cli_command(command: list[str], cwd: Path) -> subprocess.CompletedProces
     print(f"Running command: {' '.join(full_command)} in {cwd}") # Debug print
     return subprocess.run(
         full_command,
-        capture_output=True,
+        capture_output=True, # Uncommented to capture stdout/stderr
         text=True,
         cwd=cwd,
         encoding='utf-8', # Ensure consistent encoding
-        env={**os.environ, "PYTHONUTF8": "1"} # Ensure UTF-8 for subprocess I/O
+        env={**os.environ, "PYTHONUTF8": "1"}, # Ensure UTF-8 for subprocess I/O
+        timeout=60 # Add timeout to prevent hangs (e.g., 60 seconds)
     )
 
 # --- Test Cases ---
@@ -160,12 +161,17 @@ def test_list_command(setup_test_project: Path):
     """Tests the 'kotemari list' command."""
     result = run_cli_command(["list", "."], cwd=setup_test_project)
     assert result.returncode == 0, f"Expected return code 0, got {result.returncode}"
+
+    # Normalize path separators in the output for consistent checking across OS
+    # OS 間で一貫したチェックを行うために、出力内のパス区切り文字を正規化します
+    normalized_stdout = result.stdout.replace("\\", "/")
+
     # Check for the correct header including the note about ignore rules
     # 無視ルールに関する注記を含む正しいヘッダーを確認します
-    assert "Files (respecting ignore rules):" in result.stdout
-    assert ".gitignore" in result.stdout
-    assert "src/main.py" in result.stdout
-    assert "src/utils.py" in result.stdout
+    assert "Files (respecting ignore rules):" in normalized_stdout
+    assert ".gitignore" in normalized_stdout
+    assert "src/main.py" in normalized_stdout # Check with forward slashes
+    assert "src/utils.py" in normalized_stdout # Check with forward slashes
 
 
 def test_tree_command(setup_test_project: Path):

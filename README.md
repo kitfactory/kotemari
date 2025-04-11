@@ -1,156 +1,103 @@
-# Kotemari 🌳 - Understand Your Python Project's Soul Instantly!
+# Kotemari 🪄
 
-[![PyPI version](https://badge.fury.io/py/kotemari.svg)](https://badge.fury.io/py/kotemari) <!-- Placeholder -->
-[![Build Status](https://travis-ci.org/your-username/kotemari.svg?branch=main)](https://travis-ci.org/your-username/kotemari) <!-- Placeholder -->
-[![Coverage Status](https://coveralls.io/repos/github/your-username/kotemari/badge.svg?branch=main)](https://coveralls.io/github/your-username/kotemari?branch=main) <!-- Placeholder -->
+[![PyPI version](https://img.shields.io/pypi/v/kotemari.svg?style=flat-square)](https://pypi.python.org/pypi/kotemari) 
+[![Build Status](https://img.shields.io/github/actions/workflow/status/<YOUR_GITHUB_USERNAME>/kotemari/ci.yml?branch=main&style=flat-square)](https://github.com/<YOUR_GITHUB_USERNAME>/kotemari/actions)
+[![Code Coverage](https://img.shields.io/codecov/c/github/<YOUR_GITHUB_USERNAME>/kotemari?style=flat-square)](https://codecov.io/gh/<YOUR_GITHUB_USERNAME>/kotemari)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-**Kotemari helps you effortlessly understand and leverage the dependency structure of your Python projects.** ✨
-
-Ever wondered which files import a specific module? Or needed to gather all related code for an LLM prompt? Kotemari analyzes your Python project, tracks dependencies in real-time, and provides context with just a few lines of code!
+Kotemari is a Python tool designed to analyze your Python project structure, understand dependencies, and intelligently generate context for Large Language Models (LLMs) like GPT. 🧠 It helps you focus your LLM prompts by providing only the relevant code snippets and dependencies. It also features real-time file monitoring to keep the analysis up-to-date effortlessly! ✨
 
 ## 🤔 Why Kotemari?
 
-*   ** ridiculously Easy:** Get started in minutes. Install, point to your project, and analyze! 🚀
-*   **⚡️ Real-time Awareness:** Automatically detects file changes and updates dependencies on the fly.
-*   **🧠 Intelligent Analysis:** Understands Python imports to build an accurate dependency graph.
-*   **🏎️ Efficient:** Uses caching for lightning-fast re-analysis.
-*   **🎯 Versatile:** Perfect for code comprehension, refactoring assistance, context generation for LLMs, and more!
-*   ** respecting `.gitignore`:** Plays nicely with your existing ignore rules.
+Working with large codebases and LLMs can be challenging. Providing the entire project context is often inefficient and costly. Kotemari solves this by:
 
-## ✨ Key Features
+*   **🎯 Smart Context Generation:** Creates concise context strings including only the necessary files and their dependencies, perfect for LLM prompts.
+*   **🔄 Real-time Updates:** Monitors your project for file changes and automatically updates its understanding of dependencies in the background.
+*   **🔍 Deep Project Insight:** Analyzes Python `import` statements to map dependencies between your project files.
+*   **⚙️ Flexible Configuration:** Respects `.gitignore` and allows further customization via a `.kotemari.yml` configuration file (optional).
+*   **💻 Simple CLI:** Offers easy-to-use commands for analysis, listing files, viewing dependencies, and generating context.
 
-*   **Automatic Dependency Analysis:** Parses Python files to find `import` statements.
-*   **Real-time File Watching:** Monitors your project for changes (creations, modifications, deletions).
-*   **Dependency Propagation:** Updates the status of files affected by changes in their dependencies.
-*   **Context Generation:** Creates formatted context strings including a file and its dependencies (useful for LLMs).
-*   **Caching:** Stores analysis results for faster subsequent runs.
-*   **`.gitignore` Integration:** Respects rules defined in your `.gitignore` files.
+Kotemari makes interacting with LLMs about your code **simpler and more effective**. Get relevant context with just a few commands! 🎉
 
-## 📦 Installation
+## 🚀 Installation
+
+Kotemari is currently under development. To install the development version:
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/<YOUR_GITHUB_USERNAME>/kotemari.git
+    cd kotemari
+    ```
+2.  **Create a virtual environment:**
+    ```bash
+    # Using venv
+    python -m venv .venv
+    source .venv/bin/activate # On Windows use `.venv\Scripts\activate`
+
+    # Or using uv (recommended)
+    uv venv
+    source .venv/bin/activate # On Windows use `.venv\Scripts\activate`
+    ```
+3.  **Install the package in editable mode:**
+    ```bash
+    # Using pip
+    pip install -e .[dev]
+
+    # Or using uv
+    uv pip install -e .[dev]
+    ```
+
+*(Once released, installation will be as simple as `pip install kotemari`)*
+
+## ✨ Usage (CLI)
+
+Kotemari provides a command-line interface for easy interaction.
 
 ```bash
-pip install kotemari
-```
-*(Note: Kotemari is not yet published on PyPI. For now, install from source.)*
+# Activate your virtual environment first!
+source .venv/bin/activate # Or .venv\Scripts\activate on Windows
 
-To install the development version:
-```bash
-git clone https://github.com/your-username/kotemari.git # Replace with actual repo URL
-cd kotemari
-pip install -e .
-```
+# Get help
+kotemari --help
 
-## 🚀 Basic Usage
+# Analyze the project in the current directory
+# (This builds an initial understanding and cache)
+kotemari analyze
 
-Using Kotemari is incredibly simple!
+# List all tracked files (respecting .gitignore and .kotemari.yml)
+kotemari list
 
-```python
-import logging
-from pathlib import Path
-from kotemari import Kotemari
+# Show the project structure as a tree
+kotemari tree
 
-# Optional: Configure logging to see what Kotemari is doing
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Show dependencies for a specific file
+kotemari dependencies src/kotemari/core.py
 
-# 1. Initialize Kotemari with your project's root directory
-project_path = Path("./path/to/your/python_project") # <-- Change this to your project path!
-kotemari = Kotemari(project_path)
+# Generate context for specific files (includes their dependencies)
+kotemari context src/kotemari/gateway/cli_parser.py src/kotemari/controller/cli_controller.py
 
-# 2. Analyze the project (this might take a moment the first time)
-print("Analyzing project...")
-kotemari.analyze_project()
-print("Analysis complete!")
-
-# 3. List all analyzed files
-print("\nAnalyzed Files:")
-for file_info in kotemari.list_files():
-    print(f"- {file_info.path.relative_to(project_path)}")
-
-# 4. Get dependencies of a specific file
-target_file = project_path / "src" / "module_a.py" # Example file
-print(f"\nDependencies of {target_file.name}:")
-try:
-    dependencies = kotemari.get_dependencies(target_file)
-    if dependencies:
-        for dep_path in dependencies:
-            print(f"- {dep_path.relative_to(project_path)}")
-    else:
-        print("- No dependencies found.")
-except FileNotFoundError:
-    print(f"- File {target_file.name} not found in analysis results.")
-
-# 5. Get files that depend on a specific file (reverse dependencies)
-dependent_on_file = project_path / "src" / "utils.py" # Example file
-print(f"\nFiles depending on {dependent_on_file.name}:")
-try:
-    reverse_deps = kotemari.get_reverse_dependencies(dependent_on_file)
-    if reverse_deps:
-        for rev_dep_path in reverse_deps:
-            print(f"- {rev_dep_path.relative_to(project_path)}")
-    else:
-        print("- No files depend on this.")
-except FileNotFoundError:
-    print(f"- File {dependent_on_file.name} not found in analysis results.")
-
-# 6. Get formatted context for a file and its dependencies
-context_file = project_path / "src" / "main_logic.py" # Example file
-print(f"\nGenerating context for {context_file.name} (max 4000 tokens):")
-try:
-    # max_tokens helps limit the context size, useful for LLMs
-    context = kotemari.get_context(context_file, max_tokens=4000)
-    print("--- Context Start ---")
-    print(context)
-    print("--- Context End ---")
-except FileNotFoundError:
-    print(f"- File {context_file.name} not found.")
-except Exception as e:
-    print(f"An error occurred generating context: {e}")
-
-
-# 7. Optional: Start watching for file changes in the background
-print("\nStarting file watcher (press Ctrl+C to stop)...")
-kotemari.start_watching()
-
-# Keep the script running to allow the watcher to work
-try:
-    # Example: Wait for a change or run other logic
-    import time
-    while True:
-        # Check if a dependency became stale due to changes
-        # (You might integrate this check into your application loop)
-        # stale_files = [f for f in kotemari.list_files() if f.dependencies_stale]
-        # if stale_files:
-        #    print(f"\nDetected stale dependencies for: {[f.path.name for f in stale_files]}")
-        #    # You might want to re-analyze or regenerate context here
-        time.sleep(5)
-except KeyboardInterrupt:
-    print("\nStopping watcher...")
-    kotemari.stop_watching()
-    print("Watcher stopped.")
-
-print("\nKotemari example finished.")
-
+# Use verbose flags for more detailed logging
+kotemari analyze -v   # INFO level logs
+kotemari analyze -vv  # DEBUG level logs
 ```
 
-**Explanation:**
+*(The `watch` command for continuous background monitoring is under development and currently marked as experimental)*
 
-1.  **`Kotemari(project_root)`:** Creates an instance linked to your project directory.
-2.  **`analyze_project()`:** Scans files, parses imports, and builds the initial dependency graph. It uses caching, so subsequent calls are faster unless `force_reanalyze=True` is used.
-3.  **`list_files()`:** Returns a list of `FileInfo` objects for all successfully analyzed files.
-4.  **`get_dependencies(path)`:** Returns a set of `Path` objects representing files that the given `path` directly imports.
-5.  **`get_reverse_dependencies(path)`:** Returns a set of `Path` objects representing files that directly import the given `path`.
-6.  **`get_context(path, max_tokens)`:** Fetches the content of the specified `path` and its direct dependencies, formats them clearly, and returns a single string. `max_tokens` provides an approximate limit to prevent overly large outputs (useful for LLM prompts). It prioritizes the target file's content.
-7.  **`start_watching()` / `stop_watching()`:** Manages a background thread that monitors filesystem events. When relevant changes occur, Kotemari updates its internal state (e.g., marking files with changed dependencies as `dependencies_stale=True`).
+## 🔧 Development
 
-## ⚙️ Configuration (Optional)
+Interested in contributing?
 
-*(Details on configuration options, e.g., via `kotemari.toml` or init parameters, will be added here if applicable.)*
+1.  **Set up the environment** (See Installation section).
+2.  **Run tests:**
+    ```bash
+    pytest
+    ```
+3.  **Check code coverage:**
+    ```bash
+    pytest --cov=src/kotemari
+    ```
 
-## 🙌 Contributing
-
-Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
-
-*(Contribution guidelines will be added here.)*
+Please refer to `CONTRIBUTING.md` (to be created) for contribution guidelines.
 
 ## 📄 License
 

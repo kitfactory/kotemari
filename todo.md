@@ -196,21 +196,21 @@
 
 *   **ゴール:** 不要なprint文を削除し、KotemariライブラリとCLIの両方でログレベルを適切に制御できるようにする。
 *   **チェックリスト:**
-    *   `[ ]` **14-1: 不要な `print` 文の削除:**
-        *   `[ ]` プロジェクト全体のコード (`src/`, `tests/`) を確認し、デバッグ目的などで追加された不要な `print` 文を削除するか、適切な `logger.debug` 等に置き換える。
-    *   `[ ]` **14-2: `Kotemari` クラスのログレベル制御:**
-        *   `[ ]` `Kotemari.__init__` に `log_level` 引数があることを確認し、その役割を明確化する（ライブラリ内部のログ出力レベルを制御する）。
-        *   `[ ]` `Kotemari` クラス内部で使用するロガー (`logging.getLogger('kotemari')` など）を作成し、`__init__` で渡された `log_level` に基づいてレベルを設定するヘルパーメソッド (`_setup_logging` など) を実装または修正する。
-        *   `[ ]` `__init__` 内で `_setup_logging` を呼び出す。
-        *   `[ ]` デフォルト（例: `logging.WARNING` 以上）では `kotemari` ロガーのログがコンソール等に出力されないように、ハンドラ（例: `logging.NullHandler`）を設定する、またはレベルを適切に設定する。
-    *   `[ ]` **14-3: CLI の `--verbose` オプション対応:**
-        *   `[ ]` `gateway/cli_parser.py` の `main_callback` で `-v`/`-vv` オプションを処理し、対応するログレベル (`logging.INFO`, `logging.DEBUG`) を決定するロジックを確認・修正する (`_verbosity_callback` を利用)。
-        *   `[ ]` `controller/cli_controller.py` の `_get_kotemari_instance` メソッドで、`ctx.meta` からログレベルを取得し、`Kotemari` インスタンス化時に `log_level` 引数として渡すように修正する。
-        *   `[ ]` `controller/cli_controller.py` の `_setup_logging` メソッドが、`main_callback` で設定されたグローバルなロガー設定と競合しないか確認し、必要に応じて `kotemari` ロガーのみを設定するように修正する。
-    *   `[ ]` **14-4: テストの追加/修正:**
-        *   `[ ]` `Kotemari` クラスのログレベル設定に関するユニットテストを追加する。
-        *   `[ ]` `tests/integration/test_cli_integration.py` を修正し、`CliRunner` を用いて `-v`/`-vv` オプションを渡し、`stderr` に期待されるログ（INFO, DEBUGレベル）が出力されること、およびデフォルトでは出力されないことを検証するテストを追加・修正する。
-    *   `[ ]` **14-5: 計画粒度の確認:** Step 14 の各チェック項目が明確な指示になっており、実行可能であることを確認する。
+    *   `[x]` **14-1: 不要な `print` 文の削除:**
+        *   `[x]` プロジェクト全体のコード (`src/`, `tests/`) を確認し、デバッグ目的などで追加された不要な `print` 文を削除するか、適切な `logger.debug` 等に置き換える。
+    *   `[x]` **14-2: `Kotemari` クラスのログレベル制御:**
+        *   `[x]` `Kotemari.__init__` に `log_level` 引数があることを確認し、その役割を明確化する（ライブラリ内部のログ出力レベルを制御する）。
+        *   `[x]` `Kotemari` クラス内部で使用するロガー (`logging.getLogger('kotemari')` など）を作成し、`__init__` で渡された `log_level` に基づいてレベルを設定するヘルパーメソッド (`_setup_logging` など) を実装または修正する。
+        *   `[x]` `__init__` 内で `_setup_logging` を呼び出す。
+        *   `[x]` デフォルト（例: `logging.WARNING` 以上）では `kotemari` ロガーのログがコンソール等に出力されないように、ハンドラ（例: `logging.NullHandler`）を設定する、またはレベルを適切に設定する。
+    *   `[x]` **14-3: CLI の `--verbose` オプション対応:**
+        *   `[x]` `gateway/cli_parser.py` の `main_callback` で `-v`/`-vv` オプションを処理し、対応するログレベル (`logging.INFO`, `logging.DEBUG`) を決定するロジックを確認・修正する (`_verbosity_callback` を利用)。
+        *   `[x]` `controller/cli_controller.py` の `_get_kotemari_instance` メソッドで、`ctx.meta` からログレベルを取得し、`Kotemari` インスタンス化時に `log_level` 引数として渡すように修正する。
+        *   `[x]` `controller/cli_controller.py` の `_setup_logging` メソッドが、`main_callback` で設定されたグローバルなロガー設定と競合しないか確認し、必要に応じて `kotemari` ロガーのみを設定するように修正する。
+    *   `[x]` **14-4: テストの追加/修正:**
+        *   `[x]` `Kotemari` クラスのログレベル設定に関するユニットテストを追加する。
+        *   `[x]` `tests/integration/test_cli_integration.py` を修正し、`CliRunner` を用いて `-v`/`-vv` オプションを渡し、`stderr` に期待されるログ（INFO, DEBUGレベル）が出力されること、およびデフォルトでは出力されないことを検証するテストを追加・修正する。
+    *   `[x]` **14-5: 計画粒度の確認:** Step 14 の各チェック項目が明確な指示になっており、実行可能であることを確認する。
 
 ## 3. 注意事項
 

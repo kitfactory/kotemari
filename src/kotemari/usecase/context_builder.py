@@ -125,6 +125,6 @@ class ContextBuilder:
         return ContextData(
             target_files=target_files, # Original targets
             context_string=context_string,
-            related_files=related_found if related_found else None, # Files added beyond targets
+            related_files=target_files, # For now, related files are just the target files themselves
             context_type="basic_concatenation" # Example type
         ) 

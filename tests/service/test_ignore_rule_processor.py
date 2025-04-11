@@ -1,16 +1,17 @@
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+import pathspec # Import pathspec
 
-from kotemari.service.ignore_rule_processor import IgnoreRuleProcessor
-from kotemari.gateway.gitignore_reader import GitignoreReader
 from kotemari.domain.project_config import ProjectConfig
+from kotemari.gateway.gitignore_reader import GitignoreReader
+from kotemari.service.ignore_rule_processor import IgnoreRuleProcessor
 from kotemari.utility.path_resolver import PathResolver
 
 # Fixture for PathResolver
 @pytest.fixture
 def path_resolver() -> PathResolver:
-    return PathResolver()
+    return PathResolver() # Remove dummy root argument
 
 # Fixture to set up a directory structure with .gitignore files
 @pytest.fixture
@@ -31,15 +32,16 @@ def setup_ignore_test_structure(tmp_path: Path):
     #     README.md
     #   other.log
 
-    root_ignore = tmp_path / ".gitignore"
-    root_ignore.write_text("*.log\nbuild/\n", encoding='utf-8')
+    root_gitignore = tmp_path / ".gitignore"
+    root_gitignore.write_text("*.log\nbuild/\n")
 
-    project_dir = tmp_path / "project"
-    project_dir.mkdir()
-    project_ignore = project_dir / ".gitignore"
-    project_ignore.write_text("*.tmp\n/src/generated/\n", encoding='utf-8')
+    project_root = tmp_path / "project"
+    project_root.mkdir()
 
-    src_dir = project_dir / "src"
+    project_gitignore = project_root / ".gitignore"
+    project_gitignore.write_text("*.tmp\n/src/generated/\n")
+
+    src_dir = project_root / "src"
     src_dir.mkdir()
     (src_dir / "main.py").touch()
     generated_dir = src_dir / "generated"
@@ -47,21 +49,17 @@ def setup_ignore_test_structure(tmp_path: Path):
     (generated_dir / "code.py").touch()
     (src_dir / "helper.tmp").touch()
 
-    build_dir = project_dir / "build"
-    build_dir.mkdir()
-    (build_dir / "output.o").touch()
+    build_dir_project = project_root / "build"
+    build_dir_project.mkdir()
+    (build_dir_project / "output.o").touch()
 
-    (project_dir / "README.md").touch()
+    (project_root / "README.md").touch()
 
+    # File outside project, but under tmp_path
+    # プロジェクト外だが、tmp_path 配下のファイル
     (tmp_path / "other.log").touch()
 
-    return {
-        "root": tmp_path,
-        "project": project_dir,
-        "src": src_dir,
-        "generated": generated_dir,
-        "build": build_dir
-    }
+    return {"root": tmp_path, "project": project_root}
 
 # --- Test Initialization and Loading --- #
 
@@ -73,7 +71,13 @@ def test_ignore_processor_initialization(setup_ignore_test_structure, path_resol
     project_root = setup_ignore_test_structure["project"]
     # Mock GitignoreReader to verify it's called correctly
     # GitignoreReader をモックして、正しく呼び出されることを確認します
-    mock_find_all = MagicMock(return_value=[MagicMock()]) # Return dummy specs
+
+    # Create a mock object that looks like a PathSpec instance
+    # PathSpec インスタンスのように見えるモックオブジェクトを作成します
+    mock_spec = MagicMock(spec=pathspec.PathSpec)
+    mock_spec.patterns = ["*.mock"] # Give it some dummy pattern attribute
+
+    mock_find_all = MagicMock(return_value=[mock_spec]) # Return a list containing the mock spec
     monkeypatch.setattr(GitignoreReader, "find_and_read_all", mock_find_all)
 
     # Use an empty ProjectConfig for now
@@ -84,7 +88,10 @@ def test_ignore_processor_initialization(setup_ignore_test_structure, path_resol
     # Assert find_and_read_all was called with the correct project root
     # find_and_read_all が正しいプロジェクトルートで呼び出されたことを表明します
     mock_find_all.assert_called_once_with(project_root)
-    assert len(processor._gitignore_specs) == 1 # Because we mocked the return value
+    # Now assert that the spec was *actually* added
+    # スペックが *実際に* 追加されたことを表明します
+    assert len(processor._gitignore_specs) == 1
+    assert processor._gitignore_specs[0] is mock_spec # Check if the correct object was stored
 
 # --- Test get_ignore_function --- #
 
@@ -145,7 +152,9 @@ def test_ignore_function_non_absolute_path(setup_ignore_test_structure, ignore_f
     # プロジェクトルートからの相対で解決し、False を返すはず
     assert not ignore_func(Path(relative_path_str))
     assert "Received non-absolute path" in caplog.text
-    assert f"Resolving relative to project root." in caplog.text
+    # Check if the resolving phrase is present, not exact match
+    # 解決フレーズが存在するかを確認し、完全一致ではない
+    assert "Resolving relative to project root" in caplog.text
 
 # TODO: Add tests for ignore rules from ProjectConfig when implemented
 # TODO: ProjectConfig からの無視ルールが実装されたらテストを追加する 

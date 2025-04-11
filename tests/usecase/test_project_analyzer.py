@@ -433,3 +433,201 @@ def test_analyze_with_python_syntax_error(setup_analyzer_test_project, path_reso
     assert any("Skipping dependency parsing" in record.message and "error_module.py" in record.message for record in caplog.records)
     # Check AstParser was called for both
     assert mock_ast_parser.parse_dependencies.call_count == 2 
+
+# --- Helper function for mocking analyze dependencies ---
+def mock_dependencies_for_analyze(
+    project_root,
+    path_resolver,
+    scan_results, # List of FileInfo to be yielded by scan_directory
+    read_results=None, # Dict[Path, Optional[str]] or side_effect func for read_file
+    hash_results=None, # Dict[Path, Optional[str]] or side_effect func for calculate_file_hash
+    lang_results=None, # Dict[Path, Optional[str]] or side_effect func for detect_language
+    dep_results=None # Dict[Path, Optional[List[DependencyInfo]]] or side_effect func for parse_dependencies
+):
+    """Helper to set up mocks for ProjectAnalyzer.analyze."""
+    mock_fs_accessor = MagicMock(spec=FileSystemAccessor)
+    mock_hash_calculator = MagicMock(spec=HashCalculator)
+    mock_language_detector = MagicMock(spec=LanguageDetector)
+    mock_ast_parser = MagicMock(spec=AstParser)
+    mock_ignore_processor = MagicMock(spec=IgnoreRuleProcessor)
+    mock_config_manager = MagicMock(spec=ConfigManager)
+    mock_config = MagicMock(spec=ProjectConfig)
+
+    mock_config_manager.get_config.return_value = mock_config
+    mock_ignore_processor.get_ignore_function.return_value = lambda p: False # Ignore nothing by default
+
+    mock_fs_accessor.scan_directory.return_value = iter(scan_results)
+
+    if read_results is None:
+        mock_fs_accessor.read_file.return_value = None
+    elif isinstance(read_results, dict):
+        mock_fs_accessor.read_file.side_effect = lambda p: read_results.get(p)
+    else:
+        mock_fs_accessor.read_file.side_effect = read_results
+
+    if hash_results is None:
+        mock_hash_calculator.calculate_file_hash.return_value = "default_hash"
+    elif isinstance(hash_results, dict):
+        mock_hash_calculator.calculate_file_hash.side_effect = lambda p, **kw: hash_results.get(p, "default_hash")
+    else:
+        mock_hash_calculator.calculate_file_hash.side_effect = hash_results
+
+    if lang_results is None:
+        mock_language_detector.detect_language.return_value = "Python" # Default to Python
+    elif isinstance(lang_results, dict):
+        mock_language_detector.detect_language.side_effect = lambda p: lang_results.get(p)
+    else:
+        mock_language_detector.detect_language.side_effect = lang_results
+
+    if dep_results is None:
+        mock_ast_parser.parse_dependencies.return_value = []
+    elif isinstance(dep_results, dict):
+        mock_ast_parser.parse_dependencies.side_effect = lambda c, p: dep_results.get(p, [])
+    else:
+        mock_ast_parser.parse_dependencies.side_effect = dep_results
+
+
+    analyzer = ProjectAnalyzer(
+        project_root=project_root,
+        path_resolver=path_resolver,
+        config_manager=mock_config_manager,
+        fs_accessor=mock_fs_accessor,
+        ignore_processor=mock_ignore_processor,
+        hash_calculator=mock_hash_calculator,
+        language_detector=mock_language_detector,
+        ast_parser=mock_ast_parser
+    )
+    return analyzer, { # Return mocks for assertion
+        "fs": mock_fs_accessor, "hash": mock_hash_calculator, "lang": mock_language_detector,
+        "ast": mock_ast_parser, "ignore": mock_ignore_processor, "cfg": mock_config_manager
+    }
+
+# --- Tests for analyze Method Error Handling ---
+
+def test_analyze_handles_hash_error(setup_analyzer_test_project, path_resolver, caplog):
+    """Tests analyze continues if hash calculation fails."""
+    proj_root = setup_analyzer_test_project
+    file1_path = proj_root / "file1.py"
+    file2_path = proj_root / "file2.txt"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scan_results = [
+        FileInfo(path=file1_path, mtime=now, size=10),
+        FileInfo(path=file2_path, mtime=now, size=20),
+    ]
+
+    # Mock hash calculation to fail for file1.py
+    def hash_side_effect(path, **kwargs):
+        if path == file1_path:
+            raise IOError("Disk read error during hash")
+        return f"hash_{path.name}"
+
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results, hash_results=hash_side_effect
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = analyzer.analyze()
+
+    assert len(results) == 2
+    file_info_map = {fi.path: fi for fi in results}
+
+    assert file1_path in file_info_map
+    assert file_info_map[file1_path].hash is None # Hash should be None on error
+    assert file2_path in file_info_map
+    assert file_info_map[file2_path].hash == "hash_file2.txt" # Hash should be calculated for the other
+
+    assert f"Could not calculate hash for {file1_path}" in caplog.text
+    assert "Disk read error during hash" in caplog.text
+
+def test_analyze_handles_language_detect_error(setup_analyzer_test_project, path_resolver, caplog):
+    """Tests analyze continues if language detection fails."""
+    proj_root = setup_analyzer_test_project
+    file1_path = proj_root / "file1.py"
+    file2_path = proj_root / "file2.oddext"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scan_results = [
+        FileInfo(path=file1_path, mtime=now, size=10),
+        FileInfo(path=file2_path, mtime=now, size=20),
+    ]
+
+    # Mock language detection to fail for file2.oddext
+    def lang_side_effect(path):
+        if path == file2_path:
+            raise ValueError("Unknown extension")
+        return "Python"
+
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results, lang_results=lang_side_effect
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = analyzer.analyze()
+
+    assert len(results) == 2
+    file_info_map = {fi.path: fi for fi in results}
+
+    assert file1_path in file_info_map
+    assert file_info_map[file1_path].language == "Python"
+    assert file2_path in file_info_map
+    assert file_info_map[file2_path].language is None # Language should be None on error
+
+    assert f"Could not detect language for {file2_path}" in caplog.text
+    assert "Unknown extension" in caplog.text
+
+
+def test_analyze_handles_read_error_for_deps(setup_analyzer_test_project, path_resolver, caplog):
+    """Tests analyze logs warning if reading file for dependency parsing fails."""
+    proj_root = setup_analyzer_test_project
+    file1_path = proj_root / "file1.py"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scan_results = [FileInfo(path=file1_path, mtime=now, size=10)]
+
+    # Mock read_file to return None for file1.py
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results, read_results={file1_path: None}, lang_results={file1_path: "Python"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = analyzer.analyze()
+
+    assert len(results) == 1
+    assert file1_path in {fi.path for fi in results}
+    assert results[0].dependencies == [] # Dependencies remain empty
+
+    assert f"Could not read content of {file1_path} to parse dependencies." in caplog.text
+    mocks["ast"].parse_dependencies.assert_not_called() # Should not be called if read fails
+
+def test_analyze_handles_parse_dependencies_error(setup_analyzer_test_project, path_resolver, caplog):
+    """Tests analyze continues if parse_dependencies raises an unexpected error."""
+    proj_root = setup_analyzer_test_project
+    file1_path = proj_root / "file1.py"
+    file1_content = "import os"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    scan_results = [FileInfo(path=file1_path, mtime=now, size=10)]
+
+    # Mock parse_dependencies to raise a generic Exception
+    def parse_deps_side_effect(content, path):
+        if path == file1_path:
+            raise RuntimeError("Unexpected AST issue")
+        return []
+
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results,
+        read_results={file1_path: file1_content},
+        lang_results={file1_path: "Python"},
+        dep_results=parse_deps_side_effect
+    )
+
+    with caplog.at_level(logging.ERROR): # Expect ERROR level log
+        results = analyzer.analyze()
+
+    assert len(results) == 1
+    assert file1_path in {fi.path for fi in results}
+    assert results[0].dependencies == [] # Dependencies remain empty
+
+    assert f"Unexpected error parsing dependencies for {file1_path}" in caplog.text
+    assert "Unexpected AST issue" in caplog.text # Original error should be logged via exc_info
+    mocks["ast"].parse_dependencies.assert_called_once_with(file1_content, file1_path)
+
+# --- Tests for analyze_single_file Method Error Handling ---
+# (To be added next) 

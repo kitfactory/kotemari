@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Callable
+from typing import List, Callable, Union
 import pathspec
 import logging
 import os
@@ -66,14 +66,14 @@ class IgnoreRuleProcessor:
             return []
         return specs
 
-    def get_ignore_function(self) -> Callable[[str], bool]:
+    def get_ignore_function(self) -> Callable[[Union[str, Path]], bool]:
         """
         Returns a function that checks if a given path should be ignored based on all rules.
         すべてのルールに基づいて、指定されたパスを無視すべきかどうかをチェックする関数を返します。
 
         Returns:
-            Callable[[str], bool]: A function that takes a path string and returns True if it should be ignored.
-                                   パス文字列を受け取り、無視すべき場合に True を返す関数。
+            Callable[[Union[str, Path]], bool]: A function that takes a path string or Path object and returns True if it should be ignored.
+                                               パス文字列または Path オブジェクトを受け取り、無視すべき場合に True を返す関数。
         """
         # Use the pre-compiled specs from __init__
         # __init__ から事前にコンパイルされたスペックを使用します
@@ -88,17 +88,43 @@ class IgnoreRuleProcessor:
 
         # The function returned will perform the check using PathSpec
         # 返される関数は PathSpec を使用してチェックを実行します
-        def should_ignore_path(path_str: str) -> bool:
+        def should_ignore_path(path_str_or_path: Union[str, Path]) -> bool:
             try:
-                # Normalize the input path and ensure it's absolute
-                # 入力パスを正規化し、絶対パスであることを確認します
-                absolute_path = Path(path_str).resolve()
+                input_path = Path(path_str_or_path)
 
-                # pathspec expects paths relative to the directory containing the .gitignore
-                # (or in our case, relative to the project root).
-                # pathspec は .gitignore を含むディレクトリからの相対パスを期待します
-                # （または我々の場合は、プロジェクトルートからの相対パス）。
-                relative_path_str = os.path.relpath(absolute_path, project_root_str)
+                # 1. Ensure the path is absolute
+                # パスが絶対であることを確認します
+                if not input_path.is_absolute():
+                    # Attempt to resolve relative to project root, but log a warning
+                    # プロジェクトルートからの相対で解決を試みますが、警告をログに記録します
+                    logger.warning(
+                        f"Received non-absolute path '{input_path}'. "
+                        f"Resolving relative to project root '{project_root_str}'. "
+                        f"Pass absolute paths for predictable behavior."
+                    )
+                    absolute_path = (self.project_root / input_path).resolve()
+                else:
+                    absolute_path = input_path.resolve() # Normalize even if absolute
+
+                # 2. Check if the path is within the project root
+                # パスがプロジェクトルート内にあるかを確認します
+                try:
+                    # This will raise ValueError if path is not under project_root
+                    # パスが project_root 配下にない場合、ValueError が発生します
+                    relative_path_str = os.path.relpath(absolute_path, project_root_str)
+                    # Check if the path is actually outside (e.g., starts with '..')
+                    # パスが実際に外にあるかを確認します (例: '..' で始まる)
+                    if relative_path_str.startswith('..') or relative_path_str == '.': # Added '.' check for safety
+                         logger.debug(f"Path '{absolute_path}' is outside the project root '{project_root_str}'. Not ignoring.")
+                         return False # Explicitly don't ignore paths outside the root
+                except ValueError:
+                    # This exception confirms the path is outside the project root
+                    # この例外は、パスがプロジェクトルート外にあることを確認します
+                    logger.debug(f"Path '{absolute_path}' is outside the project root '{project_root_str}' (ValueError on relpath). Not ignoring.")
+                    return False
+
+                # 3. Path is absolute and inside the project root, proceed with pathspec check
+                # パスは絶対でプロジェクトルート内にあります。pathspec チェックに進みます
                 # Use forward slashes for pathspec matching consistency
                 # pathspec マッチングの一貫性のためにスラッシュを使用します
                 relative_path_posix = Path(relative_path_str).as_posix()
@@ -112,17 +138,12 @@ class IgnoreRuleProcessor:
 
                 logger.debug(f"Path '{absolute_path}' did not match any ignore specs.")
                 return False # Not ignored if no specs match
-            except ValueError:
-                 # Path is likely outside the project root
-                 # パスはおそらくプロジェクトルートの外にあります
-                 logger.warning(f"Path '{path_str}' seems to be outside the project root '{project_root_str}'. Not ignoring.")
-                 return False
+
             except Exception as e:
                  # Catch unexpected errors during path processing or matching
                  # パス処理またはマッチング中の予期しないエラーをキャッチします
-                 logger.error(f"Error checking ignore status for path '{path_str}': {e}", exc_info=True)
+                 logger.error(f"Error checking ignore status for path '{path_str_or_path}': {e}", exc_info=True)
                  return False # Default to not ignoring on error
-
 
         return should_ignore_path
 
@@ -132,23 +153,30 @@ class IgnoreRuleProcessor:
         指定されたファイルパスを無視すべきかどうかをチェックします。
 
         Args:
-            file_path (Path): The absolute path to the file to check.
-                              チェックするファイルへの絶対パス。
+            file_path (Path): The path to the file to check (can be relative or absolute).
+                              チェックするファイルへのパス (相対パスまたは絶対パス)。
 
         Returns:
             bool: True if the file should be ignored, False otherwise.
                   ファイルを無視すべき場合は True、そうでない場合は False。
         """
-        # Resolve the path to ensure it's absolute and normalized
-        # パスが絶対パスで正規化されていることを確認するために解決します
-        absolute_path = file_path.resolve()
-        # Get the ignore function and call it
-        # 無視関数を取得して呼び出します
+        # Resolve the path to ensure it's absolute and normalized BEFORE passing
+        # 渡す前にパスが絶対パスで正規化されていることを確認するために解決します
+        # This simplifies the logic inside should_ignore_path
+        # これにより should_ignore_path 内のロジックが簡素化されます
+        # absolute_path = file_path.resolve()
+
+        # Get the ignore function and call it with the original path
+        # (it handles absolute/relative resolution internally now)
+        # 無視関数を取得し、元のパスで呼び出します
+        # (現在は内部で絶対/相対解決を処理します)
         ignore_func = self.get_ignore_function()
-        # Pass the string representation of the absolute path
-        # 絶対パスの文字列表現を渡します
-        is_ignored = ignore_func(str(absolute_path))
-        logger.debug(f"Ignore check for {absolute_path}: {'Ignored' if is_ignored else 'Not Ignored'}")
+        is_ignored = ignore_func(file_path)
+
+        # Use resolved path for logging consistency
+        # ロギングの一貫性のために解決されたパスを使用します
+        log_path = file_path.resolve() if not file_path.is_absolute() else file_path
+        logger.debug(f"Ignore check for {log_path}: {'Ignored' if is_ignored else 'Not Ignored'}")
         return is_ignored
 
 # Example usage (for testing or demonstration)

@@ -186,7 +186,7 @@
     *   `[ ]` **13-1:** `pytest --cov` を実行し、最新のカバレッジレポートを生成・確認する。
     *   `[ ]` **13-2:** カバレッジが低い主要モジュール (`core.py`, `project_analyzer.py`, `file_system_accessor.py`, `gitignore_reader.py`) のテストケースを追加・修正する。
         *   `[ ]` `core.py`: イベント処理 (`_process_event`) の各分岐、ロック機構、エラーハンドリング。
-        *   `[ ]` `project_analyzer.py`: `analyze` および `analyze_single_file` 内の各ステップ（ハッシュ、言語検出、依存関係解析）のエラーケース、無視ルールの適用漏れがないか。
+        *   `[x]` `project_analyzer.py`: `analyze` および `analyze_single_file` 内の各ステップ（ハッシュ、言語検出、依存関係解析）のエラーケース、無視ルールの適用漏れがないか。
         *   `[ ]` `file_system_accessor.py`: ファイル/ディレクトリが存在しない場合、アクセス権がない場合などのエラーハンドリング。
         *   `[x]` `gitignore_reader.py`: 複雑な `.gitignore` パターン、複数 `.gitignore` ファイルのテスト。
     *   `[ ]` **13-3:** 追加/修正したテストを実行し、すべてパスすることを確認する。

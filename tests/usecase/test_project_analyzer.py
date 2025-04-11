@@ -1,8 +1,9 @@
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch, call, create_autospec
 import datetime
 import logging
+import re # Import re for regex escaping
 
 from kotemari.usecase.project_analyzer import ProjectAnalyzer
 from kotemari.domain.file_info import FileInfo
@@ -445,17 +446,23 @@ def mock_dependencies_for_analyze(
     dep_results=None # Dict[Path, Optional[List[DependencyInfo]]] or side_effect func for parse_dependencies
 ):
     """Helper to set up mocks for ProjectAnalyzer.analyze."""
-    mock_fs_accessor = MagicMock(spec=FileSystemAccessor)
-    mock_hash_calculator = MagicMock(spec=HashCalculator)
-    mock_language_detector = MagicMock(spec=LanguageDetector)
-    mock_ast_parser = MagicMock(spec=AstParser)
-    mock_ignore_processor = MagicMock(spec=IgnoreRuleProcessor)
-    mock_config_manager = MagicMock(spec=ConfigManager)
-    mock_config = MagicMock(spec=ProjectConfig)
+    # Use MagicMock and manually add expected methods for FileSystemAccessor
+    mock_fs_accessor = MagicMock()
+    # Add methods expected to be called by the tests
+    mock_fs_accessor.scan_directory = MagicMock()
+    mock_fs_accessor.read_file = MagicMock()
+    mock_fs_accessor.get_file_info = MagicMock() # Add get_file_info explicitly
+
+    # Use autospec for others where it seemed to work or less complex
+    mock_hash_calculator = create_autospec(HashCalculator, instance=True)
+    mock_language_detector = create_autospec(LanguageDetector, instance=True)
+    mock_ast_parser = create_autospec(AstParser, instance=True)
+    mock_ignore_processor = create_autospec(IgnoreRuleProcessor, instance=True)
+    mock_config_manager = create_autospec(ConfigManager, instance=True)
+    mock_config = create_autospec(ProjectConfig, instance=True)
 
     mock_config_manager.get_config.return_value = mock_config
-    mock_ignore_processor.get_ignore_function.return_value = lambda p: False # Ignore nothing by default
-
+    mock_ignore_processor.get_ignore_function.return_value = lambda p: False
     mock_fs_accessor.scan_directory.return_value = iter(scan_results)
 
     if read_results is None:
@@ -629,5 +636,252 @@ def test_analyze_handles_parse_dependencies_error(setup_analyzer_test_project, p
     assert "Unexpected AST issue" in caplog.text # Original error should be logged via exc_info
     mocks["ast"].parse_dependencies.assert_called_once_with(file1_content, file1_path)
 
+# --- More Tests for analyze Method Error Handling ---
+
+def test_analyze_handles_scan_directory_file_not_found(setup_analyzer_test_project, path_resolver):
+    """Tests that AnalysisError is raised if scan_directory causes FileNotFoundError."""
+    proj_root = setup_analyzer_test_project
+    error = FileSystemError("Directory not found", FileNotFoundError("Simulated"))
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results=iter([])
+    )
+    mocks["fs"].scan_directory.side_effect = error
+
+    # Modify match to be less strict, check for key parts
+    expected_msg_part1 = "Error scanning project directory:"
+    expected_msg_part2 = "Directory not found"
+    with pytest.raises(AnalysisError) as excinfo:
+        analyzer.analyze()
+    assert expected_msg_part1 in str(excinfo.value)
+    assert expected_msg_part2 in str(excinfo.value)
+    # Ensure the original exception is chained
+    assert isinstance(excinfo.value.__cause__, FileSystemError)
+    mocks["fs"].scan_directory.assert_called_once()
+
+
+def test_analyze_handles_scan_directory_os_error(setup_analyzer_test_project, path_resolver):
+    """Tests that AnalysisError is raised if scan_directory causes other FileSystemError."""
+    proj_root = setup_analyzer_test_project
+    error = FileSystemError("Permission denied", PermissionError("Simulated"))
+    analyzer, mocks = mock_dependencies_for_analyze(
+        proj_root, path_resolver, scan_results=iter([])
+    )
+    mocks["fs"].scan_directory.side_effect = error
+
+    # Modify match to be less strict
+    expected_msg_part1 = "Error scanning project directory:"
+    expected_msg_part2 = "Permission denied"
+    with pytest.raises(AnalysisError) as excinfo:
+        analyzer.analyze()
+    assert expected_msg_part1 in str(excinfo.value)
+    assert expected_msg_part2 in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, FileSystemError)
+    mocks["fs"].scan_directory.assert_called_once()
+
+
 # --- Tests for analyze_single_file Method Error Handling ---
-# (To be added next) 
+
+# Fixture for a basic ProjectAnalyzer instance with mocks
+@pytest.fixture
+def mocked_analyzer(setup_analyzer_test_project, path_resolver):
+    analyzer, mocks = mock_dependencies_for_analyze(
+        setup_analyzer_test_project, path_resolver, scan_results=[] # Not used by analyze_single_file
+    )
+    return analyzer, mocks
+
+
+def test_analyze_single_file_ignored(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file returns None if the file should be ignored."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    ignored_file = proj_root / "ignored.log"
+    ignored_file.touch()
+
+    mocks["ignore"].should_ignore.return_value = True
+
+    with caplog.at_level(logging.DEBUG):
+        result = analyzer.analyze_single_file(ignored_file)
+
+    assert result is None
+    mocks["ignore"].should_ignore.assert_called_once_with(ignored_file.resolve())
+    assert f"File is ignored: {ignored_file.resolve()}" in caplog.text
+    # Ensure other steps are not called
+    mocks["fs"].get_file_info.assert_not_called()
+    mocks["hash"].calculate_file_hash.assert_not_called()
+
+
+def test_analyze_single_file_metadata_error(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file returns None if get_file_info fails."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "no_meta.txt"
+    # File doesn't need to exist, get_file_info is mocked
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.side_effect = FileSystemError("Cannot access file")
+
+    with caplog.at_level(logging.ERROR):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is None
+    mocks["ignore"].should_ignore.assert_called_once()
+    mocks["fs"].get_file_info.assert_called_once_with(target_file.resolve())
+    assert f"Error getting metadata for {target_file.resolve()}" in caplog.text
+    mocks["hash"].calculate_file_hash.assert_not_called()
+
+
+def test_analyze_single_file_metadata_none(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file returns None if get_file_info returns None."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "maybe_gone.txt"
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = None # Simulate file not found or inaccessible
+
+    with caplog.at_level(logging.WARNING):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is None
+    mocks["ignore"].should_ignore.assert_called_once()
+    mocks["fs"].get_file_info.assert_called_once_with(target_file.resolve())
+    assert f"Could not get basic info for file (may not exist or inaccessible): {target_file.resolve()}" in caplog.text
+    mocks["hash"].calculate_file_hash.assert_not_called()
+
+
+def test_analyze_single_file_handles_hash_error(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file continues if hash calculation fails."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "hash_err.py"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_file_info = FileInfo(path=target_file.resolve(), mtime=now, size=10)
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = mock_file_info
+    mocks["hash"].calculate_file_hash.side_effect = ValueError("Hash algorithm not supported")
+    # Mock other steps to succeed
+    mocks["lang"].detect_language.return_value = "Python"
+    mocks["fs"].read_file.return_value = "print('ok')"
+    mocks["ast"].parse_dependencies.return_value = []
+
+
+    with caplog.at_level(logging.WARNING):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is not None
+    assert result.path == target_file.resolve()
+    assert result.hash is None # Hash should be None
+    assert result.language == "Python" # Language should still be detected
+    assert result.dependencies == []
+
+    mocks["hash"].calculate_file_hash.assert_called_once_with(target_file.resolve())
+    assert f"Could not calculate hash for {target_file.resolve()}" in caplog.text
+    assert "Hash algorithm not supported" in caplog.text
+
+
+def test_analyze_single_file_handles_language_detect_error(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file continues if language detection fails."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "lang_err.dat"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_file_info = FileInfo(path=target_file.resolve(), mtime=now, size=10)
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = mock_file_info
+    mocks["hash"].calculate_file_hash.return_value = "some_hash"
+    mocks["lang"].detect_language.side_effect = Exception("Language library crash")
+    # Mock other steps (dependency parsing won't run if language is None)
+
+    with caplog.at_level(logging.WARNING):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is not None
+    assert result.path == target_file.resolve()
+    assert result.hash == "some_hash"
+    assert result.language is None # Language should be None
+    assert result.dependencies == []
+
+    mocks["lang"].detect_language.assert_called_once_with(target_file.resolve())
+    assert f"Could not detect language for {target_file.resolve()}" in caplog.text
+    assert "Language library crash" in caplog.text
+    mocks["ast"].parse_dependencies.assert_not_called() # Should not be called
+
+
+def test_analyze_single_file_handles_read_error_for_deps(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file logs warning if reading file for deps fails."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "read_err.py"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_file_info = FileInfo(path=target_file.resolve(), mtime=now, size=10)
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = mock_file_info
+    mocks["hash"].calculate_file_hash.return_value = "some_hash"
+    mocks["lang"].detect_language.return_value = "Python" # Assume Python
+    mocks["fs"].read_file.return_value = None # Simulate read failure
+
+    with caplog.at_level(logging.WARNING):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is not None
+    assert result.path == target_file.resolve()
+    assert result.language == "Python"
+    assert result.dependencies == [] # Dependencies remain empty
+
+    mocks["fs"].read_file.assert_called_once_with(target_file.resolve())
+    assert f"Could not read content of {target_file.resolve()} to parse dependencies." in caplog.text
+    mocks["ast"].parse_dependencies.assert_not_called()
+
+
+def test_analyze_single_file_handles_syntax_error_for_deps(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file handles SyntaxError during dependency parsing."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "syntax_err.py"
+    file_content = "def oops("
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_file_info = FileInfo(path=target_file.resolve(), mtime=now, size=10)
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = mock_file_info
+    mocks["hash"].calculate_file_hash.return_value = "some_hash"
+    mocks["lang"].detect_language.return_value = "Python"
+    mocks["fs"].read_file.return_value = file_content
+    mocks["ast"].parse_dependencies.side_effect = SyntaxError("Incomplete input")
+
+    with caplog.at_level(logging.WARNING):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is not None
+    assert result.dependencies == []
+    assert f"Skipping dependency parsing for {target_file.name} due to syntax errors." in caplog.text
+    mocks["ast"].parse_dependencies.assert_called_once_with(file_content, target_file.resolve())
+
+
+def test_analyze_single_file_handles_generic_error_for_deps(mocked_analyzer, setup_analyzer_test_project, caplog):
+    """Tests analyze_single_file handles generic Exception during dependency parsing."""
+    analyzer, mocks = mocked_analyzer
+    proj_root = setup_analyzer_test_project
+    target_file = proj_root / "generic_err.py"
+    file_content = "import stuff"
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_file_info = FileInfo(path=target_file.resolve(), mtime=now, size=10)
+
+    mocks["ignore"].should_ignore.return_value = False
+    mocks["fs"].get_file_info.return_value = mock_file_info
+    mocks["hash"].calculate_file_hash.return_value = "some_hash"
+    mocks["lang"].detect_language.return_value = "Python"
+    mocks["fs"].read_file.return_value = file_content
+    mocks["ast"].parse_dependencies.side_effect = Exception("Something broke")
+
+    with caplog.at_level(logging.ERROR):
+        result = analyzer.analyze_single_file(target_file)
+
+    assert result is not None
+    assert result.dependencies == []
+    assert f"Unexpected error parsing dependencies for {target_file.resolve()}" in caplog.text
+    assert "Something broke" in caplog.text # Check original error
+    mocks["ast"].parse_dependencies.assert_called_once_with(file_content, target_file.resolve()) 

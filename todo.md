@@ -183,14 +183,34 @@
     *   必要に応じて既存のテストをリファクタリングし、より多くのコードパスをカバーできるようにする。
     *   特に `Kotemari` (`core.py`) のバックグラウンド処理やイベントハンドリング、`ProjectAnalyzer` のファイル処理ロジック、ゲートウェイ層のファイルI/Oや外部プロセス連携部分のテストを強化する。
 *   **チェックリスト:**
-    *   `[ ]` **13-1:** `pytest --cov` を実行し、最新のカバレッジレポートを生成・確認する。
-    *   `[ ]` **13-2:** カバレッジが低い主要モジュール (`core.py`, `project_analyzer.py`, `file_system_accessor.py`, `gitignore_reader.py`) のテストケースを追加・修正する。
-        *   `[ ]` `core.py`: イベント処理 (`_process_event`) の各分岐、ロック機構、エラーハンドリング。
+    *   `[x]` **13-1:** `pytest --cov` を実行し、最新のカバレッジレポートを生成・確認する。
+    *   `[x]` **13-2:** カバレッジが低い主要モジュール (`core.py`, `project_analyzer.py`, `file_system_accessor.py`, `gitignore_reader.py`) のテストケースを追加・修正する。
+        *   `[x]` `core.py`: イベント処理 (`_process_event`) の各分岐、ロック機構、エラーハンドリング。
         *   `[x]` `project_analyzer.py`: `analyze` および `analyze_single_file` 内の各ステップ（ハッシュ、言語検出、依存関係解析）のエラーケース、無視ルールの適用漏れがないか。
-        *   `[ ]` `file_system_accessor.py`: ファイル/ディレクトリが存在しない場合、アクセス権がない場合などのエラーハンドリング。
+        *   `[x]` `file_system_accessor.py`: ファイル/ディレクトリが存在しない場合、アクセス権がない場合などのエラーハンドリング。
         *   `[x]` `gitignore_reader.py`: 複雑な `.gitignore` パターン、複数 `.gitignore` ファイルのテスト。
-    *   `[ ]` **13-3:** 追加/修正したテストを実行し、すべてパスすることを確認する。
-    *   `[ ]` **13-4:** 再度 `pytest --cov` を実行し、カバレッジが目標値（85%）以上に向上したことを確認する。
+    *   `[x]` **13-3:** 追加/修正したテストを実行し、すべてパスすることを確認する。
+    *   `[x]` **13-4:** 再度 `pytest --cov` を実行し、カバレッジが目標値（85%）以上に向上したことを確認する。
+
+### Step 14: ログ出力の整理と Verbose モード対応
+
+*   **ゴール:** 不要なprint文を削除し、KotemariライブラリとCLIの両方でログレベルを適切に制御できるようにする。
+*   **チェックリスト:**
+    *   `[ ]` **14-1: 不要な `print` 文の削除:**
+        *   `[ ]` プロジェクト全体のコード (`src/`, `tests/`) を確認し、デバッグ目的などで追加された不要な `print` 文を削除するか、適切な `logger.debug` 等に置き換える。
+    *   `[ ]` **14-2: `Kotemari` クラスのログレベル制御:**
+        *   `[ ]` `Kotemari.__init__` に `log_level` 引数があることを確認し、その役割を明確化する（ライブラリ内部のログ出力レベルを制御する）。
+        *   `[ ]` `Kotemari` クラス内部で使用するロガー (`logging.getLogger('kotemari')` など）を作成し、`__init__` で渡された `log_level` に基づいてレベルを設定するヘルパーメソッド (`_setup_logging` など) を実装または修正する。
+        *   `[ ]` `__init__` 内で `_setup_logging` を呼び出す。
+        *   `[ ]` デフォルト（例: `logging.WARNING` 以上）では `kotemari` ロガーのログがコンソール等に出力されないように、ハンドラ（例: `logging.NullHandler`）を設定する、またはレベルを適切に設定する。
+    *   `[ ]` **14-3: CLI の `--verbose` オプション対応:**
+        *   `[ ]` `gateway/cli_parser.py` の `main_callback` で `-v`/`-vv` オプションを処理し、対応するログレベル (`logging.INFO`, `logging.DEBUG`) を決定するロジックを確認・修正する (`_verbosity_callback` を利用)。
+        *   `[ ]` `controller/cli_controller.py` の `_get_kotemari_instance` メソッドで、`ctx.meta` からログレベルを取得し、`Kotemari` インスタンス化時に `log_level` 引数として渡すように修正する。
+        *   `[ ]` `controller/cli_controller.py` の `_setup_logging` メソッドが、`main_callback` で設定されたグローバルなロガー設定と競合しないか確認し、必要に応じて `kotemari` ロガーのみを設定するように修正する。
+    *   `[ ]` **14-4: テストの追加/修正:**
+        *   `[ ]` `Kotemari` クラスのログレベル設定に関するユニットテストを追加する。
+        *   `[ ]` `tests/integration/test_cli_integration.py` を修正し、`CliRunner` を用いて `-v`/`-vv` オプションを渡し、`stderr` に期待されるログ（INFO, DEBUGレベル）が出力されること、およびデフォルトでは出力されないことを検証するテストを追加・修正する。
+    *   `[ ]` **14-5: 計画粒度の確認:** Step 14 の各チェック項目が明確な指示になっており、実行可能であることを確認する。
 
 ## 3. 注意事項
 

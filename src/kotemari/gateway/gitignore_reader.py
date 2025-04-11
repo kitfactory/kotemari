@@ -181,12 +181,4 @@ class GitignoreReader:
         # The specs list is ordered from deepest to shallowest .gitignore
         # specs リストは、最も深い .gitignore から最も浅いものへと順序付けられています
         logger.debug(f"Found {len(specs)} .gitignore files starting from {start_dir}")
-        return specs
-
-    def find_gitignore_files(self) -> List[Path]:
-        # Implementation of the instance method
-        pass
-
-    def find_gitignore_files(self) -> List[Path]:
-        # Implementation of the instance method
-        pass 
+        return specs 

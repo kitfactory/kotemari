@@ -55,6 +55,8 @@ class Kotemari:
         self,
         project_root: Union[str, Path],
         config_path: Optional[Union[str, Path]] = None,
+        use_cache: bool = True,
+        cache_dir: Optional[Union[str, Path]] = None,
         log_level: Union[int, str] = logging.INFO
     ):
         """
@@ -73,6 +75,10 @@ class Kotemari:
                 設定ファイル（例: .kotemari.yml）へのパス。
                 None の場合、project_root から上方に検索します。
                 デフォルトは None。
+            use_cache (bool, optional): Whether to use in-memory caching.
+                                       メモリ内キャッシングを使用するかどうか。
+            cache_dir (Optional[Path | str], optional): The directory for caching.
+                                                       キャッシュのためのディレクトリ。
             log_level (Union[int, str], optional): The logging level for the Kotemari instance.
                                                   Defaults to logging.INFO.
                                                   ログレベル。
@@ -82,10 +88,12 @@ class Kotemari:
         self._path_resolver = PathResolver()
         # Use a private variable for storing the resolved project root
         # 解決済みのプロジェクトルートを格納するためにプライベート変数を使用
-        self._project_root: Path = project_root.resolve()
+        self._project_root = Path(project_root).resolve()
+        if not self._project_root.is_dir():
+            raise NotADirectoryError(f"Project root is not a valid directory: {self._project_root}")
 
         # Debug print to stderr
-        print(f"Kotemari.__init__: Initializing for {self._project_root}", file=sys.stderr)
+        # print(f"Kotemari.__init__: Initializing for {self._project_root}", file=sys.stderr)
 
         self._config_path: Optional[Path] = None
         if config_path:
@@ -204,7 +212,7 @@ class Kotemari:
             self._run_analysis_and_update_memory() # Run full analysis
 
         # Debug print to stderr
-        print(f"Kotemari.analyze_project: Starting analysis for {self._project_root}", file=sys.stderr)
+        # print(f"Kotemari.analyze_project: Starting analysis for {self._project_root}", file=sys.stderr)
 
         logger.debug("Acquiring analysis lock to read results...")
         with self._analysis_lock:

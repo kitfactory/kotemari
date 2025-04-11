@@ -122,12 +122,10 @@ class FileSystemAccessor:
                 except OSError as e:
                     # Handle potential errors like permission denied during stat
                     # stat中の権限拒否などの潜在的なエラーを処理する
-                    # Log this error? For now, skip the file.
-                    # このエラーをログに記録しますか？今のところ、ファイルをスキップします。
                     logger.warning(f"Could not access file info for {file_path}: {e}")
                     # Optionally raise FileSystemError here? Decide based on desired strictness.
                     # オプションでここで FileSystemError を発生させますか？望ましい厳格さに基づいて決定します。
-                    pass 
+                    continue # Skip yielding this file if stat fails
 
     def exists(self, file_path: Path | str) -> bool:
         """

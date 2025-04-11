@@ -5,19 +5,19 @@
 [![Code Coverage](https://img.shields.io/codecov/c/github/<YOUR_GITHUB_USERNAME>/kotemari?style=flat-square)](https://codecov.io/gh/<YOUR_GITHUB_USERNAME>/kotemari)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
-Kotemari (こてまり) は、Python プロジェクトの構造を分析し、依存関係を理解し、GPT のような大規模言語モデル (LLM) 向けのコンテキストをインテリジェントに生成するための Python ツールです。🧠 関連するコードスニペットと依存関係のみを提供することで、LLM プロンプトに集中するのに役立ちます。また、リアルタイムのファイル監視機能も備えており、分析を簡単に最新の状態に保つことができます！ ✨
+Kotemari (こてまり) は、Python プロジェクトの構造を分析し、依存関係を理解し、GPT のような大規模言語モデル (LLM) 向けのコンテキストをインテリジェントに生成するための Python ライブラリです。🧠 その主な目的は、他の開発ツール（IDE 拡張機能、分析スクリプト、チャットインターフェースなど）に統合され、オンデマンドでプロジェクトの洞察とコンテキストを提供することです。また、リアルタイムのファイル監視機能も備えており、分析を簡単に最新の状態に保つことができます！ ✨
 
 ## 🤔 Kotemari を使う理由
 
-大規模なコードベースと LLM を扱うのは難しい場合があります。プロジェクト全体のコンテキストを提供することは、多くの場合非効率的でコストがかかります。Kotemari はこれを解決します:
+プロジェクト理解機能をツールに統合したり、LLM 向けのコンテキスト生成を自動化したりするのは複雑になることがあります。Kotemari は、堅牢な Python API を提供することでこれを簡素化します:
 
-*   **🎯 スマートなコンテキスト生成:** LLM プロンプトに最適な、必要なファイルとその依存関係のみを含む簡潔なコンテキスト文字列を作成します。
-*   **🔄 リアルタイム更新:** プロジェクトのファイルの変更を監視し、依存関係の理解をバックグラウンドで自動的に更新します。
-*   **🔍 詳細なプロジェクト分析:** Python の `import` 文を分析して、プロジェクトファイル間の依存関係をマッピングします。
-*   **⚙️ 柔軟な設定:** `.gitignore` を尊重し、`.kotemari.yml` 設定ファイル（オプション）によるさらなるカスタマイズを可能にします。
-*   **💻 シンプルな CLI:** 分析、ファイル一覧表示、依存関係表示、コンテキスト生成のための使いやすいコマンドを提供します。
+*   **🎯 スマートなコンテキストを提供:** シンプルな API 呼び出しを通じて、必要なファイルとその依存関係のみを含む簡潔なコンテキスト文字列を生成します。
+*   **🔄 最新の状態を維持:** バックグラウンドでのファイル監視と自動的なキャッシュ/依存関係の更新を提供し、API が提供する情報が最新であることを保証します。
+*   **🔍 詳細な洞察を提供:** Python の `import` 文の分析から得られる詳細な依存関係情報（直接および逆方向）にアクセスするメソッドを公開します。
+*   **⚙️ 柔軟性を提供:** Python の引数またはオプションの `.kotemari.yml` ファイルを通じて簡単に設定可能で、`.gitignore` ルールを尊重します。
+*   **🧩 統合を可能に:** カスタムの Python アプリケーションや開発ワークフローに簡単に組み込めるように設計されています。
 
-Kotemari は、あなたのコードに関する LLM との対話を **よりシンプルかつ効果的** にします。わずか数コマンドで関連性の高いコンテキストを取得しましょう！ 🎉
+Kotemari は、**シンプルで効果的な Python API** を通じて、洗練されたプロジェクト分析機能を提供することで、あなたのツールを強化します。🎉
 
 ## 🚀 インストール
 
@@ -49,39 +49,119 @@ Kotemari は現在開発中です。開発版をインストールするには:
 
 *(リリースされると、インストールは `pip install kotemari` のように簡単になります)*
 
-## ✨ 使い方 (CLI)
+## ✨ 使い方 (Python API)
 
-Kotemari は簡単な対話のためのコマンドラインインターフェースを提供します。
+Python コードで Kotemari を使用するのは簡単です:
+
+```python
+import logging
+from pathlib import Path
+from kotemari import Kotemari
+
+# オプション: Kotemari の内部動作を確認するためにロギングを設定
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(name)s: %(message)s')
+
+# 1. プロジェクトのルートディレクトリで Kotemari を初期化
+project_path = Path("./your/project/path") # <-- ここを変更してください！
+kotemari = Kotemari(project_path)
+
+# 2. プロジェクトを分析（初期キャッシュと依存関係グラフを構築）
+print("プロジェクトを分析中...")
+kotemari.analyze_project()
+print("分析完了！")
+
+# 3. 分析されたファイルのリストを取得 (FileInfo オブジェクト)
+print("\n分析されたファイル:")
+all_files = kotemari.list_files()
+for file_info in all_files[:5]: # 簡潔にするために最初の5つを表示
+    print(f"- {file_info.path.relative_to(project_path)} (ハッシュ: {file_info.hash[:7]}...)")
+
+# 4. 特定のファイルの依存関係を取得
+target_file = project_path / "src/module_a.py" # 例
+print(f"\n{target_file.name} の依存関係:")
+try:
+    dependencies = kotemari.get_dependencies(target_file)
+    if dependencies:
+        for dep_path in dependencies:
+            print(f"- {dep_path.relative_to(project_path)}")
+    else:
+        print("- 直接的な依存関係は見つかりませんでした。")
+except FileNotFoundError:
+    print(f"- ファイル {target_file.name} は分析結果に見つかりませんでした。")
+
+# 5. 特定のファイルに依存するファイルを取得（逆依存関係）
+dependent_on_file = project_path / "src/utils.py" # 例
+print(f"\n{dependent_on_file.name} に依存するファイル:")
+try:
+    reverse_deps = kotemari.get_reverse_dependencies(dependent_on_file)
+    if reverse_deps:
+        for rev_dep_path in reverse_deps:
+            print(f"- {rev_dep_path.relative_to(project_path)}")
+    else:
+        print("- このファイルに直接依存するファイルはありません。")
+except FileNotFoundError:
+    print(f"- ファイル {dependent_on_file.name} は分析結果に見つかりませんでした。")
+
+# 6. LLM 向けの整形済みコンテキストを生成（対象ファイル + 依存関係）
+context_file = project_path / "src/main_logic.py" # 例
+print(f"\n{context_file.name} のコンテキストを生成中:")
+try:
+    context_string = kotemari.get_context(context_file)
+    print("--- コンテキスト開始 ---")
+    print(context_string[:500] + "... (切り詰め)") # 簡潔にするために開始部分を表示
+    print("--- コンテキスト終了 ---")
+except FileNotFoundError:
+    print(f"- ファイル {context_file.name} が見つかりませんでした。")
+except Exception as e:
+    print(f"エラーが発生しました: {e}")
+
+# 7. オプション: リアルタイム更新のためのバックグラウンドファイル監視を開始
+# ファイルが変更されると、Kotemari は自動的に内部状態を更新します。
+print("\nファイルウォッチャーを開始します（バックグラウンドで実行）...")
+kotemari.start_watching()
+
+# --- ここにあなたのアプリケーションロジック --- 
+# これで kotemari のメソッド（list_files, get_dependencies など）を呼び出して、
+# ファイルの変更を反映した最新の結果を取得できます。
+
+print("ウォッチャーが実行中です。プロジェクトファイルを変更して更新を確認してください（INFO が有効な場合はログを確認）。")
+input("監視を停止して終了するには Enter キーを押してください...\n")
+
+print("ウォッチャーを停止中...")
+kotemari.stop_watching()
+print("ウォッチャーが停止しました。")
+```
+
+### 主要な API メソッド:
+
+*   **`Kotemari(project_root, config_path=None, use_cache=True, log_level=logging.WARNING)`:** アナライザを初期化します。
+*   **`analyze_project()`:** 初回の完全な分析を実行します。
+*   **`list_files()`:** 追跡されているすべてのファイルの `List[FileInfo]` を返します。
+*   **`get_dependencies(file_path: Path)`:** 対象ファイルがインポートするファイルの `Set[Path]` を返します。
+*   **`get_reverse_dependencies(file_path: Path)`:** 対象ファイルをインポートするファイルの `Set[Path]` を返します。
+*   **`get_context(file_path: Path, include_dependencies=True, formatter=...)`:** コンテキスト文字列を生成します。
+*   **`start_watching()` / `stop_watching()`:** バックグラウンドファイルモニターを制御します。
+*   **`clear_cache()`:** キャッシュされた分析結果を削除します。
+
+## 🛠️ CLI の使用法（オプション）
+
+Kotemari は、簡単な確認や単純なタスクのための基本的なコマンドラインインターフェースも提供します:
 
 ```bash
-# まず仮想環境を有効化します！
-source .venv/bin/activate # Windows の場合は .venv\Scripts\activate
+# 環境を有効化
+source .venv/bin/activate # または .venv\Scripts\activate
+
+# 基本コマンド
+kotemari analyze
+kotemari list
+kotemari tree
+kotemari dependencies <path/to/file.py>
+kotemari context <path/to/file1.py> [<path/to/file2.py>...]
 
 # ヘルプを表示
 kotemari --help
-
-# カレントディレクトリのプロジェクトを分析
-# (これにより、初期の理解とキャッシュが構築されます)
-kotemari analyze
-
-# 追跡されているすべてのファイルを表示 (.gitignore と .kotemari.yml を尊重します)
-kotemari list
-
-# プロジェクト構造をツリーとして表示
-kotemari tree
-
-# 特定のファイルの依存関係を表示
-kotemari dependencies src/kotemari/core.py
-
-# 特定のファイルのコンテキストを生成 (依存関係を含む)
-kotemari context src/kotemari/gateway/cli_parser.py src/kotemari/controller/cli_controller.py
-
-# より詳細なログのために verbose フラグを使用
-kotemari analyze -v   # INFO レベルのログ
-kotemari analyze -vv  # DEBUG レベルのログ
+kotemari analyze --help
 ```
-
-*(継続的なバックグラウンド監視のための `watch` コマンドは開発中であり、現在は実験的とマークされています)*
 
 ## 🔧 開発
 
